@@ -46,7 +46,7 @@ function saveState(patch) {
 // <html> — CSS does the rest. JS keeps a parallel `C` palette object only
 // because <canvas> can't read CSS variables; canvas rendering reads hex/rgb
 // strings from C, which we refresh from computed CSS on each theme switch.
-const THEME_NAMES = ["default", "light", "sepia", "fallout", "pink", "lucifer"];
+const THEME_NAMES = ["default", "comfy", "light", "sepia", "fallout", "pink", "lucifer"];
 
 // Keys whose values are color strings the canvas can read directly. fadeOutFrom /
 // fadeOutTo are stored as comma-separated RGB triplets in CSS and parsed into
@@ -110,6 +110,18 @@ function applyPalette(name) {
         const rgb = v && parseRgbTriplet(v);
         if (rgb) C[k] = rgb;
     }
+}
+
+// The "comfy" theme maps --aimdo-* to ComfyUI's --comfy-*/--color-* tokens via
+// var(). Those tokens themselves change when ComfyUI toggles its .dark-theme
+// class on <html> or <body>. DOM elements track that automatically through
+// the cascade, but the cached `C` palette used by the canvas does not — so we
+// re-run applyPalette whenever the host's theme class flips.
+function watchHostThemeFlip() {
+    const reapply = () => { if (currentTheme === "comfy") applyPalette("comfy"); };
+    const opts = { attributes: true, attributeFilter: ["class"] };
+    new MutationObserver(reapply).observe(document.documentElement, opts);
+    if (document.body) new MutationObserver(reapply).observe(document.body, opts);
 }
 
 function hexToRgb(hex) {
@@ -569,6 +581,7 @@ function createPanel() {
     }
     // always run — primes C from computed CSS so the canvas matches the stylesheet
     applyPalette(currentTheme);
+    watchHostThemeFlip();
     if (saved.modelCollapsed && typeof saved.modelCollapsed === "object") modelCollapsed = saved.modelCollapsed;
     let panelScale = typeof saved.scale === "number" ? saved.scale : 1;
 
