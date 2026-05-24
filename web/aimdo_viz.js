@@ -631,12 +631,11 @@ function createPanel() {
     let rightOffset = saved.rightOffset != null ? saved.rightOffset : 10;
     let bottomOffset = saved.bottomOffset != null ? saved.bottomOffset : 10;
 
-    // ComfyUI's topbar / workflow tabs have higher z-index than us, so the
-    // panel must clamp below them. Leaf bars (transparent bg) only block where
-    // their items actually sit, letting the panel rise into empty regions.
-    function getTopChromeBottom(panelLeft, panelRight) {
+    // Topbar/tabs sit above the panel; leaf bars block only where their items actually sit.
+    // Cache the layout so drag mousemoves don't trigger getBoundingClientRect on every leaf.
+    let chromeCache = null;
+    function refreshChromeCache() {
         const fullSels = [".comfyui-body-top", ".topbar-container", ".workflow-tabs-container", ".workflow-tabs"];
-        const leafSels = [".actionbar-container"];
         let bottom = 0;
         for (const s of fullSels) {
             for (const el of document.querySelectorAll(s)) {
@@ -644,48 +643,74 @@ function createPanel() {
                 if (r.height > 0 && r.bottom > bottom) bottom = r.bottom;
             }
         }
-        if (panelLeft == null) {
-            for (const s of leafSels) {
-                for (const el of document.querySelectorAll(s)) {
-                    const r = el.getBoundingClientRect();
-                    if (r.height > 0 && r.bottom > bottom) bottom = r.bottom;
-                }
+        const containers = [];
+        const leaves = [];
+        for (const el of document.querySelectorAll(".actionbar-container")) {
+            const r = el.getBoundingClientRect();
+            if (r.height <= 0) continue;
+            containers.push({ left: r.left, right: r.right, bottom: r.bottom });
+            for (const node of el.querySelectorAll("*")) {
+                if (node.children.length > 0) continue;
+                const nr = node.getBoundingClientRect();
+                if (nr.width <= 0 || nr.height <= 0) continue;
+                leaves.push({ left: nr.left, right: nr.right, bottom: nr.bottom });
             }
+        }
+        const sideLeft = [];
+        const sideRight = [];
+        for (const el of document.querySelectorAll(".side-toolbar-container")) {
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0) continue;
+            const isLeft = r.left < 8;
+            const isRight = window.innerWidth - r.right < 8;
+            if (isLeft) sideLeft.push({ right: r.right, top: r.top, bottom: r.bottom });
+            else if (isRight) sideRight.push({ left: r.left, top: r.top, bottom: r.bottom });
+        }
+        chromeCache = { fullBottom: bottom, containers, leaves, sideLeft, sideRight };
+    }
+    function invalidateChromeCache() { chromeCache = null; }
+    window.addEventListener("resize", invalidateChromeCache);
+    // Observe the actionbar directly (not body) so unrelated DOM churn doesn't bust the cache.
+    let chromeObserversAttached = false;
+    function attachChromeObservers() {
+        if (chromeObserversAttached) return;
+        const ac = document.querySelector(".actionbar-container");
+        const top = document.querySelector(".comfyui-body-top");
+        if (!ac && !top) { requestAnimationFrame(attachChromeObservers); return; }
+        chromeObserversAttached = true;
+        const targets = [ac, top].filter(Boolean);
+        for (const t of targets) {
+            new MutationObserver(invalidateChromeCache).observe(t, { childList: true, subtree: true });
+            if (typeof ResizeObserver !== "undefined") new ResizeObserver(invalidateChromeCache).observe(t);
+        }
+    }
+    attachChromeObservers();
+
+    function getTopChromeBottom(panelLeft, panelRight) {
+        if (!chromeCache) refreshChromeCache();
+        let bottom = chromeCache.fullBottom;
+        if (panelLeft == null) {
+            for (const c of chromeCache.containers) if (c.bottom > bottom) bottom = c.bottom;
             return bottom;
         }
-        for (const s of leafSels) {
-            for (const el of document.querySelectorAll(s)) {
-                const r = el.getBoundingClientRect();
-                if (r.height <= 0) continue;
-                if (r.right <= panelLeft || r.left >= panelRight) continue;
-                for (const node of el.querySelectorAll("*")) {
-                    if (node.children.length > 0) continue;
-                    const nr = node.getBoundingClientRect();
-                    if (nr.width <= 0 || nr.height <= 0) continue;
-                    if (nr.right <= panelLeft || nr.left >= panelRight) continue;
-                    if (nr.bottom > bottom) bottom = nr.bottom;
-                }
-            }
+        for (const nr of chromeCache.leaves) {
+            if (nr.right <= panelLeft || nr.left >= panelRight) continue;
+            if (nr.bottom > bottom) bottom = nr.bottom;
         }
         return bottom;
     }
 
-    // side toolbar can dock left or right; classify each by anchored edge.
-    // opaque bars clamp at the container edge (not at leaf icons — would slip under padding).
-    function isLeftAnchored(r) { return r.left < 8; }
-    function isRightAnchored(r) { return window.innerWidth - r.right < 8; }
     function getSideChromeBounds(panelTop, panelBottom) {
+        if (!chromeCache) refreshChromeCache();
         let minLeft = 0;
         let maxRight = window.innerWidth;
-        for (const el of document.querySelectorAll(".side-toolbar-container")) {
-            const r = el.getBoundingClientRect();
-            if (r.width <= 0) continue;
+        for (const r of chromeCache.sideLeft) {
             if (panelTop != null && (r.bottom <= panelTop || r.top >= panelBottom)) continue;
-            if (isLeftAnchored(r)) {
-                if (r.right > minLeft) minLeft = r.right;
-            } else if (isRightAnchored(r)) {
-                if (r.left < maxRight) maxRight = r.left;
-            }
+            if (r.right > minLeft) minLeft = r.right;
+        }
+        for (const r of chromeCache.sideRight) {
+            if (panelTop != null && (r.bottom <= panelTop || r.top >= panelBottom)) continue;
+            if (r.left < maxRight) maxRight = r.left;
         }
         return { minLeft, maxRight };
     }
@@ -883,13 +908,23 @@ function createPanel() {
         <div class="aimdo-mini-row">
             <span class="mini-ram-label">RAM</span><span class="mini-ram-usage"></span>
         </div>
-        <div class="aimdo-mini-track mini-ram-bar"></div>
+        <div class="aimdo-mini-track mini-ram-bar">
+            <div class="aimdo-seg aimdo-seg-pinned"></div>
+            <div class="aimdo-seg aimdo-seg-loadedRam"></div>
+            <div class="aimdo-seg aimdo-seg-python"></div>
+            <div class="aimdo-seg aimdo-seg-other"></div>
+        </div>
     </div>
     <div class="mini-vram-section">
         <div class="aimdo-mini-row">
             <span class="mini-vram-label">VRAM</span><span class="mini-vram-usage"></span>
         </div>
-        <div class="aimdo-mini-track mini-vram-bar"></div>
+        <div class="aimdo-mini-track mini-vram-bar">
+            <div class="aimdo-seg aimdo-seg-vram"></div>
+            <div class="aimdo-seg aimdo-seg-torch"></div>
+            <div class="aimdo-seg aimdo-seg-torchCache"></div>
+            <div class="aimdo-seg aimdo-seg-other"></div>
+        </div>
     </div>
     <div class="mini-cpu-section">
         <div class="aimdo-mini-row">
@@ -915,6 +950,36 @@ function createPanel() {
         </div>
     </div>`;
 
+    // refs cached once so the per-tick render path doesn't re-query
+    const mbRefs = {
+        ramSection: miniBar.querySelector(".mini-ram-section"),
+        ramLabel: miniBar.querySelector(".mini-ram-label"),
+        ramUsage: miniBar.querySelector(".mini-ram-usage"),
+        ramSegs: miniBar.querySelectorAll(".mini-ram-bar > .aimdo-seg"),
+        vramSection: miniBar.querySelector(".mini-vram-section"),
+        vramLabel: miniBar.querySelector(".mini-vram-label"),
+        vramUsage: miniBar.querySelector(".mini-vram-usage"),
+        vramSegs: miniBar.querySelectorAll(".mini-vram-bar > .aimdo-seg"),
+        cpuSection: miniBar.querySelector(".mini-cpu-section"),
+        cpuLabel: miniBar.querySelector(".mini-cpu-label"),
+        cpuUsage: miniBar.querySelector(".mini-cpu-usage"),
+        cpuFill: miniBar.querySelector(".mini-cpu-fill"),
+        gpuSection: miniBar.querySelector(".mini-gpu-section"),
+        gpuRow: miniBar.querySelector(".mini-gpu-row"),
+        gpuLabel: miniBar.querySelector(".mini-gpu-label"),
+        gpuHeaderValue: miniBar.querySelector(".mini-gpu-header-value"),
+        utilRow: miniBar.querySelector(".mini-util-row"),
+        gpuUsage: miniBar.querySelector(".mini-gpu-usage"),
+        gpuFill: miniBar.querySelector(".mini-gpu-fill"),
+        tempRow: miniBar.querySelector(".mini-temp-row"),
+        tempUsage: miniBar.querySelector(".mini-temp-usage"),
+        tempFill: miniBar.querySelector(".mini-temp-fill"),
+        powerRow: miniBar.querySelector(".mini-power-row"),
+        powerUsage: miniBar.querySelector(".mini-power-usage"),
+        powerFill: miniBar.querySelector(".mini-power-fill"),
+    };
+    miniBar._refs = mbRefs;
+
     const headerRight = document.createElement("div");
     headerRight.className = "aimdo-header-right";
 
@@ -936,13 +1001,20 @@ function createPanel() {
         }
     }
     updateExecBtnState();
+    let execBusy = false;
     execBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
+        // re-entrancy guard: fast double-clicks during the in-flight request would
+        // otherwise double-queue (or send a redundant interrupt).
+        if (execBusy) return;
+        execBusy = true;
         try {
             if (execState.running) await api.interrupt(null);
             else await app.queuePrompt(0);
         } catch (err) {
             console.error("aimdo-viz: exec/interrupt failed", err);
+        } finally {
+            execBusy = false;
         }
     });
     headerRight.appendChild(execBtn);
@@ -1513,6 +1585,14 @@ function createPanel() {
     gpuSubmenu.appendChild(showGpuTemp.item);
     gpuSubmenu.appendChild(showGpuPower.item);
     miniSubmenu.appendChild(makeSubmenuParent("GPU", gpuSubmenu, miniSubmenu, [miniSubmenu]));
+    // when the cursor enters a non-parent item in miniSubmenu, close gpuSubmenu — otherwise
+    // it would linger open while the user is interacting with sibling toggles like RAM/VRAM.
+    miniSubmenu.addEventListener("mouseover", (e) => {
+        const item = e.target.closest(".aimdo-menu-item, .aimdo-menu-parent");
+        if (item && item.classList.contains("aimdo-menu-item")) {
+            gpuSubmenu.style.display = "none";
+        }
+    });
     miniSubmenu.appendChild(showNames.item);
     miniSubmenu.appendChild(showType.item);
     miniSubmenu.appendChild(showNumbers.item);
@@ -1804,6 +1884,88 @@ function ensureStructure(body) {
         if (refs) drawGraph(refs.graphCtx, refs.graphCanvas.width, refs.graphCanvas.height);
         t.style.opacity = gpuLineVisible ? "1" : "0.4";
     });
+    // skeleton built once; renderData mutates text/widths/visibility only.
+    contentDiv.innerHTML = `
+        <div style="margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
+                <span>RAM</span>
+                <span class="content-ram-usage"></span>
+            </div>
+            <div style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
+                <div class="aimdo-seg aimdo-seg-pinned"></div>
+                <div class="aimdo-seg aimdo-seg-loadedRam"></div>
+                <div class="aimdo-seg aimdo-seg-python"></div>
+                <div class="aimdo-seg aimdo-seg-other"></div>
+            </div>
+            <div class="content-ram-legend" style="display:flex;gap:8px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
+                <span><span style="color:var(--aimdo-pinned);">&#9632;</span> <span class="content-ram-pinned-txt"></span></span>
+                <span><span style="color:var(--aimdo-loadedRam);">&#9632;</span> <span class="content-ram-loaded-txt"></span></span>
+                <span><span style="color:var(--aimdo-python);">&#9632;</span> <span class="content-ram-python-txt"></span></span>
+                <span><span style="color:var(--aimdo-other);">&#9632;</span> <span class="content-ram-other-txt"></span></span>
+            </div>
+        </div>
+        <div style="margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
+                <span class="content-vram-label">VRAM</span>
+                <span class="content-vram-usage"></span>
+            </div>
+            <div style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
+                <div class="aimdo-seg aimdo-seg-vram"></div>
+                <div class="aimdo-seg aimdo-seg-torch"></div>
+                <div class="aimdo-seg aimdo-seg-torchCache"></div>
+                <div class="aimdo-seg aimdo-seg-other"></div>
+            </div>
+            <div class="content-vram-legend" style="display:flex;gap:8px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
+                <span class="content-vram-models-wrap"><span style="color:var(--aimdo-vram);">&#9632;</span> <span class="content-vram-models-txt"></span></span>
+                <span class="content-vram-torch-wrap"><span style="color:var(--aimdo-torch);">&#9632;</span> <span class="content-vram-torch-txt"></span></span>
+                <span class="content-vram-cache-wrap"><span style="color:var(--aimdo-torchCache);">&#9632;</span> <span class="content-vram-cache-txt"></span></span>
+                <span><span style="color:var(--aimdo-other);">&#9632;</span> <span class="content-vram-other-txt"></span></span>
+            </div>
+            <div style="display:flex;gap:10px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
+                <span class="content-info-peak"></span>
+                <span class="content-info-cache"></span>
+                <span class="aimdo-gpu-util content-info-gpu" title="Click to toggle GPU line on graph" style="cursor:pointer;"></span>
+                <span class="content-info-temp"></span>
+                <span class="content-info-power" title="GPU power draw / cap"></span>
+                <span class="content-info-state"></span>
+            </div>
+        </div>
+    `;
+    const _q = (s) => contentDiv.querySelector(s);
+    // .aimdo-seg-other: [0]=RAM block, [1]=VRAM block
+    const _others = contentDiv.querySelectorAll(".aimdo-seg-other");
+    contentDiv._refs = {
+        ramUsage: _q(".content-ram-usage"),
+        ramSegs: [_q(".aimdo-seg-pinned"), _q(".aimdo-seg-loadedRam"), _q(".aimdo-seg-python"), _others[0]],
+        ramTexts: {
+            pinned: _q(".content-ram-pinned-txt"),
+            loaded: _q(".content-ram-loaded-txt"),
+            python: _q(".content-ram-python-txt"),
+            other: _q(".content-ram-other-txt"),
+        },
+        ramLegend: _q(".content-ram-legend"),
+        vramLabel: _q(".content-vram-label"),
+        vramUsage: _q(".content-vram-usage"),
+        vramSegs: [_q(".aimdo-seg-vram"), _q(".aimdo-seg-torch"), _q(".aimdo-seg-torchCache"), _others[1]],
+        vramWraps: {
+            models: _q(".content-vram-models-wrap"),
+            torch: _q(".content-vram-torch-wrap"),
+            cache: _q(".content-vram-cache-wrap"),
+        },
+        vramTexts: {
+            models: _q(".content-vram-models-txt"),
+            torch: _q(".content-vram-torch-txt"),
+            cache: _q(".content-vram-cache-txt"),
+            other: _q(".content-vram-other-txt"),
+        },
+        vramLegend: _q(".content-vram-legend"),
+        infoPeak: _q(".content-info-peak"),
+        infoCache: _q(".content-info-cache"),
+        infoGpu: _q(".content-info-gpu"),
+        infoTemp: _q(".content-info-temp"),
+        infoPower: _q(".content-info-power"),
+        infoState: _q(".content-info-state"),
+    };
     body.appendChild(contentDiv);
 
     const graphHeader = document.createElement("div");
@@ -2016,10 +2178,31 @@ function renderModelRow(r, m, data) {
         el.appendChild(bar);
         const legend = document.createElement("div");
         legend.className = "aimdo-model-legend";
+        const makeLegendEntry = () => {
+            const wrap = document.createElement("span");
+            const sw = document.createElement("span");
+            sw.innerHTML = "&#9632;";
+            const txt = document.createTextNode("");
+            wrap.appendChild(sw);
+            wrap.appendChild(txt);
+            return { wrap, sw, txt };
+        };
+        const legendEntries = {
+            vram: makeLegendEntry(),
+            pinned: makeLegendEntry(),
+            loaded: makeLegendEntry(),
+            last: makeLegendEntry(),  // "unloaded" for dynamic models, "RAM" for static
+        };
+        legendEntries.pinned.sw.style.color = "var(--aimdo-pinned)";
+        legendEntries.loaded.sw.style.color = "var(--aimdo-loadedRam)";
+        legend.appendChild(legendEntries.vram.wrap);
+        legend.appendChild(legendEntries.pinned.wrap);
+        legend.appendChild(legendEntries.loaded.wrap);
+        legend.appendChild(legendEntries.last.wrap);
         el.appendChild(legend);
         const vbarsDiv = document.createElement("div");
         el.appendChild(vbarsDiv);
-        row = { el, chevron, nameSpan, sizeSpan, right, unloadBtn, bar, barSegs: [], legend, vbarsDiv, vbarRefs: [], wmBtn: null, lastDynamic: null, lastVbarSig: "", collapsed: false };
+        row = { el, chevron, nameSpan, sizeSpan, right, unloadBtn, bar, barSegs: [], legend, legendEntries, vbarsDiv, vbarRefs: [], wmBtn: null, lastDynamic: null, lastVbarSig: "", collapsed: false };
         nameWrap.addEventListener("click", () => {
             row.collapsed = !row.collapsed;
             modelCollapsed[m.name] = row.collapsed;
@@ -2067,43 +2250,45 @@ function renderModelRow(r, m, data) {
     // re-apply each tick so theme changes reach the segments created once on dynamic-change rebuild.
     row.barSegs.forEach((seg, i) => { seg.style.background = i === 0 ? vramColor : barColors[i]; });
 
+    const total = m.total_size || 1;
+    const pinnedRam = m.pinned_ram || 0;
+    const loadedRam = m.loaded_ram || 0;
+    let vramShown, lastSize, lastLabel, lastColor, lastAlwaysShow;
     if (m.dynamic) {
-        const pinnedRam = m.pinned_ram || 0;
-        const loadedRam = m.loaded_ram || 0;
-        const unloadedSize = Math.max(0, m.total_size - m.vbar_loaded - pinnedRam - loadedRam);
-        const total = m.total_size || 1;
-        row.barSegs[0].style.width = (m.vbar_loaded / total * 100) + "%";
-        row.barSegs[0].title = "VRAM: " + formatBytes(m.vbar_loaded);
-        row.barSegs[1].style.width = (pinnedRam / total * 100) + "%";
-        row.barSegs[1].title = "pinned RAM: " + formatBytes(pinnedRam);
-        row.barSegs[2].style.width = (loadedRam / total * 100) + "%";
-        row.barSegs[2].title = "loaded RAM: " + formatBytes(loadedRam);
-        row.barSegs[3].style.width = (unloadedSize / total * 100) + "%";
-        row.barSegs[3].title = "unloaded: " + formatBytes(unloadedSize);
-        row.legend.innerHTML =
-            `<span><span style="color:${vramColor};">&#9632;</span> VRAM ${formatBytes(m.vbar_loaded)}</span>` +
-            (pinnedRam > 0 ? `<span><span style="color:var(--aimdo-pinned);">&#9632;</span> pinned ${formatBytes(pinnedRam)}</span>` : "") +
-            (loadedRam > 0 ? `<span><span style="color:var(--aimdo-loadedRam);">&#9632;</span> loaded ${formatBytes(loadedRam)}</span>` : "") +
-            `<span><span style="color:var(--aimdo-unloaded);">&#9632;</span> unloaded ${formatBytes(unloadedSize)}</span>`;
+        vramShown = m.vbar_loaded;
+        lastSize = Math.max(0, m.total_size - m.vbar_loaded - pinnedRam - loadedRam);
+        lastLabel = "unloaded";
+        lastColor = "var(--aimdo-unloaded)";
+        lastAlwaysShow = true;
     } else {
+        vramShown = m.loaded_size;
         const inRam = Math.max(0, m.total_size - m.loaded_size);
-        const pinnedRam = m.pinned_ram || 0;
-        const loadedRam = m.loaded_ram || 0;
-        const otherRam = Math.max(0, inRam - pinnedRam - loadedRam);
-        const total = m.total_size || 1;
-        row.barSegs[0].style.width = (m.loaded_size / total * 100) + "%";
-        row.barSegs[0].title = "VRAM: " + formatBytes(m.loaded_size);
-        row.barSegs[1].style.width = (pinnedRam / total * 100) + "%";
-        row.barSegs[1].title = "pinned RAM: " + formatBytes(pinnedRam);
-        row.barSegs[2].style.width = (loadedRam / total * 100) + "%";
-        row.barSegs[2].title = "loaded RAM: " + formatBytes(loadedRam);
-        row.barSegs[3].style.width = (otherRam / total * 100) + "%";
-        row.barSegs[3].title = "RAM: " + formatBytes(otherRam);
-        row.legend.innerHTML =
-            `<span><span style="color:${vramColor};">&#9632;</span> VRAM ${formatBytes(m.loaded_size)}</span>` +
-            (pinnedRam > 0 ? `<span><span style="color:var(--aimdo-pinned);">&#9632;</span> pinned ${formatBytes(pinnedRam)}</span>` : "") +
-            (loadedRam > 0 ? `<span><span style="color:var(--aimdo-loadedRam);">&#9632;</span> loaded ${formatBytes(loadedRam)}</span>` : "") +
-            (otherRam > 0 ? `<span><span style="color:var(--aimdo-pinned);">&#9632;</span> RAM ${formatBytes(otherRam)}</span>` : "");
+        lastSize = Math.max(0, inRam - pinnedRam - loadedRam);
+        lastLabel = "RAM";
+        lastColor = "var(--aimdo-pinned)";
+        lastAlwaysShow = false;
+    }
+    row.barSegs[0].style.width = (vramShown / total * 100) + "%";
+    row.barSegs[0].title = "VRAM: " + formatBytes(vramShown);
+    row.barSegs[1].style.width = (pinnedRam / total * 100) + "%";
+    row.barSegs[1].title = "pinned RAM: " + formatBytes(pinnedRam);
+    row.barSegs[2].style.width = (loadedRam / total * 100) + "%";
+    row.barSegs[2].title = "loaded RAM: " + formatBytes(loadedRam);
+    row.barSegs[3].style.width = (lastSize / total * 100) + "%";
+    row.barSegs[3].title = (m.dynamic ? "unloaded: " : "RAM: ") + formatBytes(lastSize);
+
+    const le = row.legendEntries;
+    le.vram.sw.style.color = vramColor;
+    le.vram.txt.nodeValue = ` VRAM ${formatBytes(vramShown)}`;
+    le.pinned.wrap.style.display = pinnedRam > 0 ? "" : "none";
+    if (pinnedRam > 0) le.pinned.txt.nodeValue = ` pinned ${formatBytes(pinnedRam)}`;
+    le.loaded.wrap.style.display = loadedRam > 0 ? "" : "none";
+    if (loadedRam > 0) le.loaded.txt.nodeValue = ` loaded ${formatBytes(loadedRam)}`;
+    const showLast = lastAlwaysShow || lastSize > 0;
+    le.last.wrap.style.display = showLast ? "" : "none";
+    if (showLast) {
+        le.last.sw.style.color = lastColor;
+        le.last.txt.nodeValue = ` ${lastLabel} ${formatBytes(lastSize)}`;
     }
 
     // vbars: rebuild structure only when device list / count changes
@@ -2126,8 +2311,21 @@ function renderModelRow(r, m, data) {
             row.vbarsDiv.appendChild(pgrid);
             const stats = document.createElement("div");
             stats.style.cssText = `color:var(--aimdo-textDim);font-size:10px;margin-top:2px;`;
+            const vramSw = document.createElement("span"); vramSw.innerHTML = "&#9632;";
+            const vramTxt = document.createTextNode("");
+            const vramWrap = document.createElement("span");
+            vramWrap.appendChild(vramSw); vramWrap.appendChild(vramTxt);
+            const unloadedSw = document.createElement("span");
+            unloadedSw.style.color = "var(--aimdo-unloaded)";
+            unloadedSw.innerHTML = "&#9632;";
+            const unloadedTxt = document.createTextNode("");
+            const unloadedWrap = document.createElement("span");
+            unloadedWrap.appendChild(unloadedSw); unloadedWrap.appendChild(unloadedTxt);
+            stats.appendChild(vramWrap);
+            stats.appendChild(document.createTextNode(" "));
+            stats.appendChild(unloadedWrap);
             row.vbarsDiv.appendChild(stats);
-            row.vbarRefs.push({ vi, pgrid, stats });
+            row.vbarRefs.push({ vi, pgrid, stats, vramSw, vramTxt, unloadedTxt });
         }
         row.lastVbarSig = sig;
     }
@@ -2193,6 +2391,7 @@ function renderData(body, data) {
     const ramOtherPct = (ramOther / ramTotal * 100).toFixed(0);
 
     const mb = body._miniBar;
+    const m = mb._refs;  // refs cached at panel creation (see mbRefs in createPanel)
     const _u = miniShowUnits;
     const _n = miniShowNumbers;
     // "%" isn't a unit — units off should still show ratios as percentages, just
@@ -2205,48 +2404,42 @@ function renderData(body, data) {
         const p = Math.round(num / total * 100);
         return (p < 10 ? "0" : "") + p + "%";
     };
-    mb.querySelector(".mini-vram-usage").textContent = !_n ? "" :
+    m.vramUsage.textContent = !_n ? "" :
         _u ? `${formatBytes(used)} / ${formatBytes(data.total_vram)}`
            : asPct(used, data.total_vram);
-    mb.querySelector(".mini-vram-bar").innerHTML =
-        `<div style="background:var(--aimdo-vram);height:100%;width:${aimdoPct}%;"></div>` +
-        `<div style="background:var(--aimdo-torch);height:100%;width:${torchPct}%;"></div>` +
-        `<div style="background:var(--aimdo-torchCache);height:100%;width:${torchCachePct}%;"></div>` +
-        `<div style="background:var(--aimdo-other);height:100%;width:${otherPct}%;"></div>`;
-    mb.querySelector(".mini-ram-usage").textContent = !_n ? "" :
+    m.vramSegs[0].style.width = aimdoPct + "%";
+    m.vramSegs[1].style.width = torchPct + "%";
+    m.vramSegs[2].style.width = torchCachePct + "%";
+    m.vramSegs[3].style.width = otherPct + "%";
+    m.ramUsage.textContent = !_n ? "" :
         _u ? `${formatBytes(ramUsed)} / ${formatBytes(ramTotal)}`
            : asPct(ramUsed, ramTotal);
-    mb.querySelector(".mini-ram-bar").innerHTML =
-        `<div style="background:var(--aimdo-pinned);height:100%;width:${pinnedRamPct}%;"></div>` +
-        `<div style="background:var(--aimdo-loadedRam);height:100%;width:${loadedRamPct}%;"></div>` +
-        `<div style="background:var(--aimdo-python);height:100%;width:${pythonOtherPct}%;"></div>` +
-        `<div style="background:var(--aimdo-other);height:100%;width:${ramOtherPct}%;"></div>`;
+    m.ramSegs[0].style.width = pinnedRamPct + "%";
+    m.ramSegs[1].style.width = loadedRamPct + "%";
+    m.ramSegs[2].style.width = pythonOtherPct + "%";
+    m.ramSegs[3].style.width = ramOtherPct + "%";
 
     // toggleable "Type" label hides RAM / VRAM / CPU / GPU prefixes (plus any device suffix)
-    mb.querySelector(".mini-ram-label").style.display = miniShowType ? "" : "none";
-    mb.querySelector(".mini-vram-label").style.display = miniShowType ? "" : "none";
+    m.ramLabel.style.display = miniShowType ? "" : "none";
+    m.vramLabel.style.display = miniShowType ? "" : "none";
 
-    mb.querySelector(".mini-ram-section").style.display = showRamInMini ? "" : "none";
-    mb.querySelector(".mini-vram-section").style.display = showVramInMini ? "" : "none";
-    const cpuSection = mb.querySelector(".mini-cpu-section");
+    m.ramSection.style.display = showRamInMini ? "" : "none";
+    m.vramSection.style.display = showVramInMini ? "" : "none";
     if (data.cpu_util != null && showCpuInMini) {
-        cpuSection.style.display = "";
+        m.cpuSection.style.display = "";
         const cpuColor = gpuUtilColor(data.cpu_util);
         const cpuPct = Math.round(data.cpu_util);
-        mb.querySelector(".mini-cpu-usage").innerHTML = _n
+        m.cpuUsage.innerHTML = _n
             ? `<span style="color:${cpuColor};">${(cpuPct < 10 ? "0" : "") + cpuPct}%</span>`
             : "";
-        const cpuFill = mb.querySelector(".mini-cpu-fill");
-        cpuFill.style.background = cpuColor;
-        cpuFill.style.width = `${cpuPct}%`;
-        const cpuLabel = mb.querySelector(".mini-cpu-label");
-        cpuLabel.textContent = (showHwNames && data.cpu_name) ? `CPU (${shortenCpuName(data.cpu_name)})` : "CPU";
-        cpuLabel.title = data.cpu_name || "";
-        cpuLabel.style.display = miniShowType ? "" : "none";
+        m.cpuFill.style.background = cpuColor;
+        m.cpuFill.style.width = `${cpuPct}%`;
+        m.cpuLabel.textContent = (showHwNames && data.cpu_name) ? `CPU (${shortenCpuName(data.cpu_name)})` : "CPU";
+        m.cpuLabel.title = data.cpu_name || "";
+        m.cpuLabel.style.display = miniShowType ? "" : "none";
     } else {
-        cpuSection.style.display = "none";
+        m.cpuSection.style.display = "none";
     }
-    const gpuSection = mb.querySelector(".mini-gpu-section");
     // each bar is independently toggleable; section only hides when ALL three are off
     // (or unavailable). util is no longer special — it can be off while temp/power show.
     const _showUtil = data.gpu_util != null && showGpuInMini;
@@ -2254,59 +2447,59 @@ function renderData(body, data) {
     const _showPower = data.gpu_power != null && data.gpu_power_limit != null && miniShowGpuPower;
     const _activeBars = (_showUtil ? 1 : 0) + (_showTemp ? 1 : 0) + (_showPower ? 1 : 0);
     if (_activeBars > 0) {
-        gpuSection.style.display = "";
+        m.gpuSection.style.display = "";
         // compact 8px / 3px styling kicks in only when there's >1 bar to fit
         const isSingleBar = _activeBars === 1;
-        gpuSection.classList.toggle("is-multibar", !isSingleBar);
+        m.gpuSection.classList.toggle("is-multibar", !isSingleBar);
 
         // title row — "GPU" or "GPU (RTX 4090)" on the left, value on the right when
         // only one bar is visible (then the layout matches RAM/VRAM/CPU above).
-        const gpuLabel = mb.querySelector(".mini-gpu-label");
-        gpuLabel.textContent = (showHwNames && data.gpu_name) ? `GPU (${shortenGpuName(data.gpu_name)})` : "GPU";
-        gpuLabel.title = data.gpu_name || "";
-        gpuLabel.style.display = miniShowType ? "" : "none";
+        m.gpuLabel.textContent = (showHwNames && data.gpu_name) ? `GPU (${shortenGpuName(data.gpu_name)})` : "GPU";
+        m.gpuLabel.title = data.gpu_name || "";
+        m.gpuLabel.style.display = miniShowType ? "" : "none";
         // keep the row visible if either the label is on, or there's a single-bar value to show
-        mb.querySelector(".mini-gpu-row").style.display = (miniShowType || isSingleBar) ? "" : "none";
+        m.gpuRow.style.display = (miniShowType || isSingleBar) ? "" : "none";
 
         // util row
-        mb.querySelector(".mini-util-row").style.display = _showUtil ? "" : "none";
+        m.utilRow.style.display = _showUtil ? "" : "none";
         if (_showUtil) {
             const gpuColor = gpuUtilColor(data.gpu_util);
-            const gpuFill = mb.querySelector(".mini-gpu-fill");
-            gpuFill.style.background = gpuColor;
-            gpuFill.style.width = `${data.gpu_util}%`;
-            mb.querySelector(".mini-gpu-usage").innerHTML = _n
+            m.gpuFill.style.background = gpuColor;
+            m.gpuFill.style.width = `${data.gpu_util}%`;
+            m.gpuUsage.innerHTML = _n
                 ? `<span style="color:${gpuColor};">${(data.gpu_util < 10 ? "0" : "") + data.gpu_util}%</span>`
                 : "";
         }
 
         // temp row — 100°C is full scale; units-off uses "%" since the bar already
         // treats 100°C as the denominator (75°C → 75% of the bar full).
-        mb.querySelector(".mini-temp-row").style.display = _showTemp ? "" : "none";
+        m.tempRow.style.display = _showTemp ? "" : "none";
         if (_showTemp) {
             const tempColor = gpuTempColor(data.gpu_temp);
-            const tempFill = mb.querySelector(".mini-temp-fill");
-            tempFill.style.background = tempColor;
-            tempFill.style.width = `${Math.min(100, data.gpu_temp)}%`;
-            mb.querySelector(".mini-temp-usage").innerHTML = _n
-                ? `<span style="color:${tempColor};">${data.gpu_temp}${_u ? "&deg;C" : "%"}</span>`
+            m.tempFill.style.background = tempColor;
+            m.tempFill.style.width = `${Math.min(100, data.gpu_temp)}%`;
+            // units-off reads the bar's clamped 0–100°C scale, so cap the displayed digit
+            // at 100 to match the bar fill (an over-temp condition shows "100%" rather
+            // than e.g. "105%" which would falsely look like overflow past the bar).
+            const tempDisplay = _u ? `${data.gpu_temp}&deg;C` : `${Math.min(100, data.gpu_temp)}%`;
+            m.tempUsage.innerHTML = _n
+                ? `<span style="color:${tempColor};">${tempDisplay}</span>`
                 : "";
         }
 
         // power row — fill is draw/limit; value is W or % depending on the Units toggle
-        mb.querySelector(".mini-power-row").style.display = _showPower ? "" : "none";
+        m.powerRow.style.display = _showPower ? "" : "none";
         if (_showPower) {
             const powerColor = gpuPowerColor(data.gpu_power, data.gpu_power_limit);
-            const powerFill = mb.querySelector(".mini-power-fill");
-            powerFill.style.background = powerColor;
+            m.powerFill.style.background = powerColor;
             const powerPct = data.gpu_power_limit > 0
                 ? Math.min(100, data.gpu_power / data.gpu_power_limit * 100)
                 : 0;
-            powerFill.style.width = `${powerPct}%`;
+            m.powerFill.style.width = `${powerPct}%`;
             const powerText = _u
                 ? formatPower(data.gpu_power, data.gpu_power_limit)
                 : asPct(data.gpu_power, data.gpu_power_limit);
-            mb.querySelector(".mini-power-usage").innerHTML = _n
+            m.powerUsage.innerHTML = _n
                 ? `<span style="color:${powerColor};">${powerText}</span>`
                 : "";
         }
@@ -2315,59 +2508,86 @@ function renderData(body, data) {
         // reads like RAM/VRAM/CPU above (label + value on top, bar below).
         let headerHtml = "";
         if (isSingleBar) {
-            if (_showUtil) headerHtml = mb.querySelector(".mini-gpu-usage").innerHTML;
-            else if (_showTemp) headerHtml = mb.querySelector(".mini-temp-usage").innerHTML;
-            else if (_showPower) headerHtml = mb.querySelector(".mini-power-usage").innerHTML;
+            if (_showUtil) headerHtml = m.gpuUsage.innerHTML;
+            else if (_showTemp) headerHtml = m.tempUsage.innerHTML;
+            else if (_showPower) headerHtml = m.powerUsage.innerHTML;
         }
-        mb.querySelector(".mini-gpu-header-value").innerHTML = headerHtml;
+        m.gpuHeaderValue.innerHTML = headerHtml;
     } else {
-        gpuSection.style.display = "none";
+        m.gpuSection.style.display = "none";
     }
 
-    r.contentDiv.innerHTML = `<div style="margin-bottom:4px;">
-        <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
-            <span>RAM</span>
-            <span>${formatBytes(ramUsed)} / ${formatBytes(ramTotal)}</span>
-        </div>
-        <div style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
-            <div style="background:var(--aimdo-pinned);height:100%;width:${pinnedRamPct}%;" title="pinned: ${formatBytes(pinnedRamTotal)}"></div>
-            <div style="background:var(--aimdo-loadedRam);height:100%;width:${loadedRamPct}%;" title="loaded: ${formatBytes(loadedRamTotal)}"></div>
-            <div style="background:var(--aimdo-python);height:100%;width:${pythonOtherPct}%;" title="python: ${formatBytes(pythonOther)}"></div>
-            <div style="background:var(--aimdo-other);height:100%;width:${ramOtherPct}%;" title="other: ${formatBytes(ramOther)}"></div>
-        </div>
-        ${showLegends ? `<div style="display:flex;gap:8px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
-            <span><span style="color:var(--aimdo-pinned);">&#9632;</span> pinned ${formatBytes(pinnedRamTotal)}</span>
-            <span><span style="color:var(--aimdo-loadedRam);">&#9632;</span> loaded ${formatBytes(loadedRamTotal)}</span>
-            <span><span style="color:var(--aimdo-python);">&#9632;</span> python ${formatBytes(pythonOther)}</span>
-            <span><span style="color:var(--aimdo-other);">&#9632;</span> other ${formatBytes(ramOther)}</span>
-        </div>` : ""}
-    </div>
-    <div style="margin-bottom:4px;">
-        <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
-            <span title="${escHtml(data.gpu_name || "")}">VRAM${(showHwNames && data.gpu_name) ? ` (${escHtml(shortenGpuName(data.gpu_name))})` : ""}</span>
-            <span>${formatBytes(used)} / ${formatBytes(data.total_vram)}</span>
-        </div>
-        <div style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
-            <div style="background:var(--aimdo-vram);height:100%;width:${aimdoPct}%;" title="models: ${formatBytes(aimdo)}"></div>
-            <div style="background:var(--aimdo-torch);height:100%;width:${torchPct}%;" title="torch: ${formatBytes(torchActive)}"></div>
-            <div style="background:var(--aimdo-torchCache);height:100%;width:${torchCachePct}%;" title="cache: ${formatBytes(torchCache)}"></div>
-            <div style="background:var(--aimdo-other);height:100%;width:${otherPct}%;" title="other: ${formatBytes(otherUsed)}"></div>
-        </div>
-        ${showLegends ? `<div style="display:flex;gap:8px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
-            ${aimdo > 0 ? `<span><span style="color:var(--aimdo-vram);">&#9632;</span> models ${formatBytes(aimdo)}</span>` : ""}
-            ${torchActive > 0 ? `<span><span style="color:var(--aimdo-torch);">&#9632;</span> torch ${formatBytes(torchActive)}</span>` : ""}
-            ${torchCache > 0 ? `<span><span style="color:var(--aimdo-torchCache);">&#9632;</span> cache ${formatBytes(torchCache)}</span>` : ""}
-            <span><span style="color:var(--aimdo-other);">&#9632;</span> other ${formatBytes(otherUsed)}</span>
-        </div>` : ""}
-        <div style="display:flex;gap:10px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
-            <span>peak: ${formatBytes(peakVramUsed)}</span>
-            <span>cache: ${formatBytes(data.torch_reserved - data.torch_active)}</span>
-            ${data.gpu_util != null ? `<span class="aimdo-gpu-util" title="Click to toggle GPU line on graph" style="color:${gpuUtilColor(data.gpu_util)};cursor:pointer;opacity:${gpuLineVisible ? 1 : 0.4};">GPU ${data.gpu_util < 10 ? "0" : ""}${data.gpu_util}%</span>` : ""}
-            ${data.gpu_temp != null ? `<span style="color:${gpuTempColor(data.gpu_temp)};">${data.gpu_temp}&deg;C</span>` : ""}
-            ${data.gpu_power != null && data.gpu_power_limit != null ? `<span title="GPU power draw / cap" style="color:${gpuPowerColor(data.gpu_power, data.gpu_power_limit)};">${formatPower(data.gpu_power, data.gpu_power_limit)}</span>` : ""}
-            ${execState.running ? `<span style="color:var(--aimdo-running);">&#9679; ${execState.node || "running"}${execState.progress ? " " + execState.progress : ""}</span>` : `<span>&#9679; idle</span>`}
-        </div>
-    </div>`;
+    const cr = r.contentDiv._refs;
+    cr.ramUsage.textContent = `${formatBytes(ramUsed)} / ${formatBytes(ramTotal)}`;
+    cr.ramSegs[0].style.width = pinnedRamPct + "%";
+    cr.ramSegs[0].title = "pinned: " + formatBytes(pinnedRamTotal);
+    cr.ramSegs[1].style.width = loadedRamPct + "%";
+    cr.ramSegs[1].title = "loaded: " + formatBytes(loadedRamTotal);
+    cr.ramSegs[2].style.width = pythonOtherPct + "%";
+    cr.ramSegs[2].title = "python: " + formatBytes(pythonOther);
+    cr.ramSegs[3].style.width = ramOtherPct + "%";
+    cr.ramSegs[3].title = "other: " + formatBytes(ramOther);
+    cr.ramLegend.style.display = showLegends ? "flex" : "none";
+    if (showLegends) {
+        cr.ramTexts.pinned.textContent = `pinned ${formatBytes(pinnedRamTotal)}`;
+        cr.ramTexts.loaded.textContent = `loaded ${formatBytes(loadedRamTotal)}`;
+        cr.ramTexts.python.textContent = `python ${formatBytes(pythonOther)}`;
+        cr.ramTexts.other.textContent = `other ${formatBytes(ramOther)}`;
+    }
+
+    cr.vramLabel.textContent = "VRAM" + ((showHwNames && data.gpu_name) ? ` (${shortenGpuName(data.gpu_name)})` : "");
+    cr.vramLabel.title = data.gpu_name || "";
+    cr.vramUsage.textContent = `${formatBytes(used)} / ${formatBytes(data.total_vram)}`;
+    cr.vramSegs[0].style.width = aimdoPct + "%";
+    cr.vramSegs[0].title = "models: " + formatBytes(aimdo);
+    cr.vramSegs[1].style.width = torchPct + "%";
+    cr.vramSegs[1].title = "torch: " + formatBytes(torchActive);
+    cr.vramSegs[2].style.width = torchCachePct + "%";
+    cr.vramSegs[2].title = "cache: " + formatBytes(torchCache);
+    cr.vramSegs[3].style.width = otherPct + "%";
+    cr.vramSegs[3].title = "other: " + formatBytes(otherUsed);
+    cr.vramLegend.style.display = showLegends ? "flex" : "none";
+    if (showLegends) {
+        cr.vramWraps.models.style.display = aimdo > 0 ? "" : "none";
+        if (aimdo > 0) cr.vramTexts.models.textContent = `models ${formatBytes(aimdo)}`;
+        cr.vramWraps.torch.style.display = torchActive > 0 ? "" : "none";
+        if (torchActive > 0) cr.vramTexts.torch.textContent = `torch ${formatBytes(torchActive)}`;
+        cr.vramWraps.cache.style.display = torchCache > 0 ? "" : "none";
+        if (torchCache > 0) cr.vramTexts.cache.textContent = `cache ${formatBytes(torchCache)}`;
+        cr.vramTexts.other.textContent = `other ${formatBytes(otherUsed)}`;
+    }
+
+    cr.infoPeak.textContent = "peak: " + formatBytes(peakVramUsed);
+    cr.infoCache.textContent = "cache: " + formatBytes(data.torch_reserved - data.torch_active);
+    if (data.gpu_util != null) {
+        cr.infoGpu.style.display = "";
+        cr.infoGpu.style.color = gpuUtilColor(data.gpu_util);
+        cr.infoGpu.style.opacity = gpuLineVisible ? "1" : "0.4";
+        cr.infoGpu.textContent = `GPU ${data.gpu_util < 10 ? "0" : ""}${data.gpu_util}%`;
+    } else {
+        cr.infoGpu.style.display = "none";
+    }
+    if (data.gpu_temp != null) {
+        cr.infoTemp.style.display = "";
+        cr.infoTemp.style.color = gpuTempColor(data.gpu_temp);
+        cr.infoTemp.innerHTML = `${data.gpu_temp}&deg;C`;
+    } else {
+        cr.infoTemp.style.display = "none";
+    }
+    if (data.gpu_power != null && data.gpu_power_limit != null) {
+        cr.infoPower.style.display = "";
+        cr.infoPower.style.color = gpuPowerColor(data.gpu_power, data.gpu_power_limit);
+        cr.infoPower.textContent = formatPower(data.gpu_power, data.gpu_power_limit);
+    } else {
+        cr.infoPower.style.display = "none";
+    }
+    if (execState.running) {
+        cr.infoState.style.color = "var(--aimdo-running)";
+        cr.infoState.textContent = `● ${execState.node || "running"}${execState.progress ? " " + execState.progress : ""}`;
+    } else {
+        cr.infoState.style.color = "";
+        cr.infoState.textContent = "● idle";
+    }
 
     // sync canvas backing to device pixels: visual viewport px × devicePixelRatio.
     // Drawing then happens in logical (panel-local) CSS px via the totalScale transform,
@@ -2457,9 +2677,9 @@ function renderData(body, data) {
             const ramPages = vb.residency.length - vramPages;
             const vramColor = (colorModelBars && MODEL_TYPE_COLOR[m.type]) || C.vram;
             // swatch carries the category color; text inherits readable textDim.
-            ref.stats.innerHTML =
-                `<span><span style="color:${vramColor};">&#9632;</span> ${vramPages} VRAM (${formatBytes(vramPages * PAGE)})</span>` +
-                ` <span><span style="color:var(--aimdo-unloaded);">&#9632;</span> ${ramPages} unloaded (${formatBytes(ramPages * PAGE)})</span>`;
+            ref.vramSw.style.color = vramColor;
+            ref.vramTxt.nodeValue = ` ${vramPages} VRAM (${formatBytes(vramPages * PAGE)})`;
+            ref.unloadedTxt.nodeValue = ` ${ramPages} unloaded (${formatBytes(ramPages * PAGE)})`;
 
             let canvas = r.pageCanvases[vkey];
             if (!canvas) {
