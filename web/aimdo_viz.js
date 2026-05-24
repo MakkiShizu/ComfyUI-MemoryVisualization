@@ -1,4 +1,4 @@
-	import { app } from "../../scripts/app.js";
+import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 let pollInterval = 500;
@@ -276,61 +276,99 @@ function historyGet(arr, idx) {
     return arr[(history.head - history.len + idx + HISTORY_BUFFER) % HISTORY_BUFFER];
 }
 
-// history persistence — separate localStorage key from the panel settings since
-// it's larger and changes constantly. ~50 KB at full buffer.
-const HISTORY_STORAGE_KEY = "aimdo_viz_history";
-function saveHistory() {
+// history persistence — IndexedDB
+// Origin-scoped like so all ComfyUI tabs on this port share the DB.
+const HISTORY_DB_NAME = "aimdo_viz";
+const HISTORY_DB_VERSION = 1;
+const HISTORY_STORE = "kv";
+const HISTORY_KEY = "history";
+const HISTORY_SCHEMA = 1;  // bump when the stored record shape changes incompatibly
+
+// cleanup the localStorage key for users upgrading from the previous version.
+try { localStorage.removeItem("aimdo_viz_history"); } catch {}
+
+let _dbPromise = null;
+function openHistoryDb() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(HISTORY_DB_NAME, HISTORY_DB_VERSION);
+        req.onupgradeneeded = () => req.result.createObjectStore(HISTORY_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    _dbPromise.catch(() => { _dbPromise = null; });  // allow retry after open failure
+    return _dbPromise;
+}
+
+async function saveHistory() {
+    // skip writes when there's nothing to persist; resetHistory uses its own
+    // delete path so we never need to encode "empty" as a stored record.
+    if (history.len === 0) return;
     try {
-        const len = history.len;
-        if (len === 0) { localStorage.removeItem(HISTORY_STORAGE_KEY); return; }
-        // serialize in chronological order so the ring's head/wrap is irrelevant on load
-        const ordered = arr => {
-            const out = new Array(len);
-            for (let i = 0; i < len; i++) {
-                out[i] = arr[(history.head - len + i + HISTORY_BUFFER) % HISTORY_BUFFER];
-            }
-            return out;
-        };
-        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify({
-            v: 1,
-            len,
+        const db = await openHistoryDb();
+        // structured clone snapshots the Float64Arrays at put() time, so subsequent
+        // mutations to history.* don't affect the pending write. head/len recover
+        // ring position on load — no reorder pass needed.
+        db.transaction(HISTORY_STORE, "readwrite").objectStore(HISTORY_STORE).put({
+            v: HISTORY_SCHEMA,
+            head: history.head,
+            len: history.len,
+            buffer_size: HISTORY_BUFFER,
             total_vram: history.total_vram,
-            times: ordered(history.times),
-            torch_active: ordered(history.torch_active),
-            aimdo_usage: ordered(history.aimdo_usage),
-            free_vram: ordered(history.free_vram),
-            gpu_util: ordered(history.gpu_util),
+            times: history.times,
+            torch_active: history.torch_active,
+            aimdo_usage: history.aimdo_usage,
+            free_vram: history.free_vram,
+            gpu_util: history.gpu_util,
             execEvents: history.execEvents,
-        }));
-    } catch {
-        // quota or other failure — silently skip; next save attempt may succeed
-    }
-}
-function loadHistory() {
-    try {
-        const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
-        if (!raw) return;
-        const data = JSON.parse(raw);
-        if (!data || data.v !== 1 || typeof data.len !== "number") return;
-        const len = Math.min(data.len, HISTORY_BUFFER);
-        history.total_vram = data.total_vram || 1;
-        for (let i = 0; i < len; i++) {
-            history.times[i] = data.times[i];
-            history.torch_active[i] = data.torch_active[i];
-            history.aimdo_usage[i] = data.aimdo_usage[i];
-            history.free_vram[i] = data.free_vram[i];
-            history.gpu_util[i] = data.gpu_util[i];
+        }, HISTORY_KEY);
+    } catch (err) {
+        // log once per session — saveHistory runs every 10s, so a persistent failure
+        // (private-browsing IDB disabled, quota exceeded) would otherwise spam the console.
+        if (!saveHistory._warned) {
+            saveHistory._warned = true;
+            console.warn("aimdo-viz: history save failed", err);
         }
-        history.len = len;
-        history.head = len % HISTORY_BUFFER;
-        if (Array.isArray(data.execEvents)) history.execEvents = data.execEvents.slice(-EXEC_EVENTS_MAX);
-    } catch {
-        // corrupted blob — leave history empty
     }
 }
-loadHistory();
-setInterval(saveHistory, 10000);
-window.addEventListener("beforeunload", saveHistory);
+
+async function clearHistoryStorage() {
+    // inline path used by resetHistory so the intent ("delete") is captured at the
+    // call site — avoids racing the poll loop that could re-populate history.len
+    // before an async saveHistory() got around to checking it.
+    try {
+        const db = await openHistoryDb();
+        db.transaction(HISTORY_STORE, "readwrite").objectStore(HISTORY_STORE).delete(HISTORY_KEY);
+    } catch (err) { console.warn("aimdo-viz: history clear failed", err); }
+}
+
+async function loadHistory() {
+    try {
+        const db = await openHistoryDb();
+        const data = await new Promise((resolve, reject) => {
+            const req = db.transaction(HISTORY_STORE, "readonly").objectStore(HISTORY_STORE).get(HISTORY_KEY);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        if (!data || data.v !== HISTORY_SCHEMA || typeof data.len !== "number") return;
+        // if HISTORY_BUFFER changed since the save, the ring head/positions wouldn't
+        // align with the current buffer size — drop the saved data and start fresh
+        // rather than display a corrupted/zero-filled graph.
+        if (!data.times || data.times.length !== HISTORY_BUFFER) return;
+        // copy via .set() rather than reassigning so external references to the
+        // history.* Float64Arrays stay valid.
+        const copy = (target, source) => { if (source) target.set(source); };
+        history.total_vram = data.total_vram || 1;
+        copy(history.times, data.times);
+        copy(history.torch_active, data.torch_active);
+        copy(history.aimdo_usage, data.aimdo_usage);
+        copy(history.free_vram, data.free_vram);
+        copy(history.gpu_util, data.gpu_util);
+        history.len = Math.min(data.len, HISTORY_BUFFER);
+        history.head = (typeof data.head === "number" ? data.head : history.len) % HISTORY_BUFFER;
+        if (Array.isArray(data.execEvents)) history.execEvents = data.execEvents.slice(-EXEC_EVENTS_MAX);
+    } catch (err) { console.warn("aimdo-viz: history load failed", err); }
+}
 
 function drawGraph(ctx, w, h) {
     const total = history.total_vram;
@@ -1086,7 +1124,7 @@ function createPanel() {
         history.gpu_util.fill(0);
         history.times.fill(0);
         history.execEvents.length = 0;
-        try { localStorage.removeItem(HISTORY_STORAGE_KEY); } catch {}
+        clearHistoryStorage();  // fire-and-forget delete; intent captured synchronously
     }
 
     const popoutBtn = document.createElement("span");
@@ -2738,6 +2776,13 @@ app.registerExtension({
         // wait for aimdo_viz.css so applyPalette can read CSS variables back into C —
         // canvas drawing needs real hex strings, not unresolved var() references.
         await cssLoaded;
+        // load before wiring the periodic save so a stray tick can't overwrite the
+        // stored history with an empty buffer between extension boot and first poll.
+        await loadHistory();
+        setInterval(saveHistory, 10000);
+        // beforeunload is best-effort with IDB: writes are async and may not commit
+        // before teardown. The 10s interval bounds loss to ~1% of the 20-min buffer.
+        window.addEventListener("beforeunload", saveHistory);
         const body = createPanel();
 
         api.addEventListener("execution_start", () => {
