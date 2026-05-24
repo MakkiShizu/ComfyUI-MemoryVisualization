@@ -821,12 +821,14 @@ function createPanel() {
     function positionDockedBody() {
         if (!isDocked || !dockExpanded) return;
         const r = panel.getBoundingClientRect();
-        const overlayW = 340;
-        const anchorLeft = dockSide === "right"
-            ? r.right - overlayW
-            : r.left;
-        const left = Math.max(4, Math.min(window.innerWidth - overlayW - 4, anchorLeft));
-        body.style.top = (r.bottom + 4) + "px";
+        const ac = getActionbarContainer();
+        const acr = ac ? ac.getBoundingClientRect() : null;
+        const overlayW = 420;
+        const anchor = dockSide === "right"
+            ? (acr ? acr.right - overlayW : r.right - overlayW)
+            : (acr ? acr.left : r.left);
+        const left = Math.max(4, Math.min(window.innerWidth - overlayW - 4, anchor));
+        body.style.top = (r.bottom + 12) + "px";
         body.style.left = left + "px";
     }
 
@@ -896,6 +898,14 @@ function createPanel() {
         isDocked = true;
         saveState({ docked: true, dockSide });
         return true;
+    }
+
+    function reconcileDocking() {
+        if (!isDocked || panel.isConnected) return;
+        const ac = getActionbarContainer();
+        if (!ac) return;
+        panel.style.order = dockSide === "left" ? "-1" : "1";
+        ac.appendChild(panel);
     }
 
     function undock() {
@@ -1801,20 +1811,6 @@ function createPanel() {
         rootMenu.style.display = "none";
         closeAllSubmenus();
     });
-    // close the docked-expanded body overlay on outside click. body is a DOM child of panel
-    // so panel.contains catches clicks inside the overlay; the popped-out menus live in
-    // document.body, so we whitelist them too — otherwise picking a context-menu item
-    // would also dismiss the overlay the menu was launched from.
-    document.addEventListener("click", (e) => {
-        if (!isDocked || !dockExpanded) return;
-        if (panel.contains(e.target)) return;
-        if (rootMenu.contains(e.target)) return;
-        if (unloadMenu.contains(e.target)) return;
-        for (const m of allSubmenus) if (m.contains(e.target)) return;
-        dockExpanded = false;
-        panel.classList.remove("aimdo-docked-expanded");
-        toggleBtn.textContent = "+";
-    });
     // moving the mouse out of the menu structure into empty space should also
     // close the submenu so it doesn't linger over unrelated UI.
     rootMenu.addEventListener("mouseleave", (e) => {
@@ -1900,6 +1896,7 @@ function createPanel() {
     body._miniBar = miniBar;
     body._panel = panel;
     body._updateExecBtnState = updateExecBtnState;
+    body._reconcileDocking = reconcileDocking;
     return body;
 }
 
@@ -2017,7 +2014,6 @@ function ensureStructure(body) {
     graphCanvas.style.cssText = `width:100%;height:${graphHeight}px;border-radius:3px;background:var(--aimdo-graphBg);flex-shrink:0;cursor:crosshair;`;
     body.appendChild(graphCanvas);
 
-    // redraw without waiting for the next poll — used by the scrub-drag handler.
     const redrawGraph = () => {
         if (!refs || !refs.graphCtx) return;
         const panelScale = (body._panel && body._panel._scale) || 1;
@@ -2026,6 +2022,13 @@ function ensureStructure(body) {
             drawGraph(refs.graphCtx, gRect.width / panelScale, gRect.height / panelScale);
         }
         updateGraphTimes();
+    };
+    // rAF-coalesce bursts from mousemove (hover + scrub) so we draw at most once per frame
+    let redrawPending = false;
+    const scheduleRedraw = () => {
+        if (redrawPending) return;
+        redrawPending = true;
+        requestAnimationFrame(() => { redrawPending = false; redrawGraph(); });
     };
 
     graphCanvas.addEventListener("mousemove", (e) => {
@@ -2047,7 +2050,7 @@ function ensureStructure(body) {
             graphHover.idx = startIdx + visibleIdx;
             graphHover.x = slotIdx * stepX;
         }
-        redrawGraph();
+        scheduleRedraw();
     });
     graphCanvas.addEventListener("mouseleave", () => {
         graphHover.x = null;
@@ -2074,7 +2077,7 @@ function ensureStructure(body) {
         const ptsPerPx = GRAPH_POINTS / Math.max(1, rect.width / scrubDrag.scale);
         const maxOffset = Math.max(0, history.len - GRAPH_POINTS);
         history.viewOffset = Math.max(0, Math.min(maxOffset, Math.round(scrubDrag.startOffset + dxPx * ptsPerPx)));
-        redrawGraph();
+        scheduleRedraw();
     });
     document.addEventListener("mouseup", () => {
         if (!scrubDrag) return;
@@ -2811,6 +2814,7 @@ app.registerExtension({
                 const resp = await api.fetchApi("/aimdo/vram");
                 const data = await resp.json();
                 renderData(body, data);
+                body._reconcileDocking?.();
             } catch (e) {
                 body.innerHTML = `<div style="color:#aa5555;">Error fetching data</div>`;
                 refs = null;

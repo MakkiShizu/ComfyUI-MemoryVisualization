@@ -263,7 +263,13 @@
     flex-shrink: 0;
     align-content: center;
 }
-#aimdo-viz-panel.aimdo-docked .aimdo-drag-handle { display: inline-grid; }
+#aimdo-viz-panel.aimdo-docked .aimdo-drag-handle {
+    display: inline-grid;
+    grid-template-columns: 2px 2px;
+    grid-template-rows: 2px 2px 2px;
+    gap: 3px;
+    padding: 0 8px;
+}
 .aimdo-drag-handle > span {
     width: 2px;
     height: 2px;
@@ -274,9 +280,10 @@
 .aimdo-drag-handle:hover > span { background: var(--aimdo-text); }
 .aimdo-header-right {
     display: flex; align-items: center; gap: 6px;
+    margin-left: auto;
 }
 #aimdo-viz-panel.aimdo-docked .aimdo-header {
-    padding: 2px 8px !important;
+    padding: 2px 8px 2px 0 !important;
     background: transparent !important;
     border-radius: 0 !important;
     flex-shrink: 0;
@@ -287,6 +294,7 @@
 .aimdo-btn {
     cursor: pointer;
     font-size: 10px;
+    line-height: 1;
     padding: 1px 6px;
     background: var(--aimdo-btn);
     border-radius: 3px;
@@ -298,12 +306,19 @@
     color: var(--aimdo-btnText);
     padding: 0 4px;
 }
+#aimdo-viz-panel.aimdo-docked .aimdo-btn {
+    font-size: 11px;
+    padding: 3px 6px;
+}
 
 /* play / cancel-running button — same shape as other header buttons, but the icon
    carries the state color (green play, red stop). Hover lifts the background. */
 .aimdo-exec-btn {
     cursor: pointer;
     user-select: none;
+    display: inline-block;
+    text-align: center;
+    min-width: 1em;  /* keeps width stable across ▶ / ■ */
     font-size: 10px;
     line-height: 1;
     padding: 2px 6px;
@@ -315,6 +330,10 @@
 }
 .aimdo-exec-btn:hover { filter: brightness(1.4); }
 .aimdo-exec-btn.is-running { color: var(--aimdo-gpuUtilHi); }
+#aimdo-viz-panel.aimdo-docked .aimdo-exec-btn {
+    font-size: 12px;
+    padding: 2.5px 10px;
+}
 
 /* ---------------- mini-bar ---------------- */
 .aimdo-mini-bar {
@@ -405,7 +424,7 @@
     display: flex !important;
     position: fixed !important;
     z-index: 1500;
-    width: 340px;
+    width: 420px;
     max-height: 60vh;
     background: var(--aimdo-bg);
     color: var(--aimdo-text);
