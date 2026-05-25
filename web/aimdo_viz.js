@@ -2451,14 +2451,14 @@ function renderData(body, data) {
         return (p < 10 ? "0" : "") + p + "%";
     };
     m.vramUsage.textContent = !_n ? "" :
-        _u ? `${formatBytes(used)} / ${formatBytes(data.total_vram)}`
+        _u ? `${formatBytes(used)}|${formatBytes(data.total_vram)}`
            : asPct(used, data.total_vram);
     m.vramSegs[0].style.width = aimdoPct + "%";
     m.vramSegs[1].style.width = torchPct + "%";
     m.vramSegs[2].style.width = torchCachePct + "%";
     m.vramSegs[3].style.width = otherPct + "%";
     m.ramUsage.textContent = !_n ? "" :
-        _u ? `${formatBytes(ramUsed)} / ${formatBytes(ramTotal)}`
+        _u ? `${formatBytes(ramUsed)}|${formatBytes(ramTotal)}`
            : asPct(ramUsed, ramTotal);
     m.ramSegs[0].style.width = pinnedRamPct + "%";
     m.ramSegs[1].style.width = loadedRamPct + "%";
@@ -2564,7 +2564,7 @@ function renderData(body, data) {
     }
 
     const cr = r.contentDiv._refs;
-    cr.ramUsage.textContent = `${formatBytes(ramUsed)} / ${formatBytes(ramTotal)}`;
+    cr.ramUsage.textContent = `${formatBytes(ramUsed)}|${formatBytes(ramTotal)}`;
     cr.ramSegs[0].style.width = pinnedRamPct + "%";
     cr.ramSegs[0].title = "pinned: " + formatBytes(pinnedRamTotal);
     cr.ramSegs[1].style.width = loadedRamPct + "%";
@@ -2583,7 +2583,7 @@ function renderData(body, data) {
 
     cr.vramLabel.textContent = "VRAM" + ((showHwNames && data.gpu_name) ? ` (${shortenGpuName(data.gpu_name)})` : "");
     cr.vramLabel.title = data.gpu_name || "";
-    cr.vramUsage.textContent = `${formatBytes(used)} / ${formatBytes(data.total_vram)}`;
+    cr.vramUsage.textContent = `${formatBytes(used)}|${formatBytes(data.total_vram)}`;
     cr.vramSegs[0].style.width = aimdoPct + "%";
     cr.vramSegs[0].title = "models: " + formatBytes(aimdo);
     cr.vramSegs[1].style.width = torchPct + "%";

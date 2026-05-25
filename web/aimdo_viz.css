@@ -403,11 +403,22 @@
     display: flex !important; flex-direction: row !important;
     padding: 0 !important; gap: 12px; align-items: center;
     flex: 1 1 auto; min-width: 0;
+    font-size: 9px;
+}
+#aimdo-viz-panel.aimdo-docked .aimdo-mini-row {
+    flex-wrap: wrap;
+    gap: 0 6px;
+    margin-bottom: 1px;
+}
+#aimdo-viz-panel.aimdo-docked .aimdo-mini-row > span {
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 #aimdo-viz-panel.aimdo-docked .aimdo-mini-bar > * {
     width: var(--aimdo-dock-section-w, 110px);
     min-width: var(--aimdo-dock-section-w, 110px);
     flex: 0 0 auto;
+    overflow: hidden;
 }
 
 /* ---------------- body ---------------- */
@@ -559,7 +570,7 @@
 .aimdo-edge-bottom { left: 4px; right: 4px; bottom: 0; height: 4px; cursor: ns-resize; }
 .aimdo-corner-handle {
     position: absolute; right: 0; bottom: 0;
-    width: 12px; height: 12px; cursor: nwse-resize; z-index: 2;
+    width: 8px; height: 8px; cursor: nwse-resize; z-index: 2;
     background: linear-gradient(135deg,
         transparent 50%,
         var(--aimdo-textDim) 50%, var(--aimdo-textDim) 60%,
