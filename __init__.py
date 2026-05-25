@@ -11,6 +11,7 @@ import comfy.model_management
 import comfy.memory_management
 import comfy.model_base
 
+
 log = logging.getLogger(__name__)
 
 try:
@@ -58,6 +59,7 @@ def _get_lock():
 
 # cached; CPU model doesn't change at runtime.
 _cpu_name_cache = {"tried": False, "name": None}
+
 def _get_cpu_name():
     if _cpu_name_cache["tried"]:
         return _cpu_name_cache["name"]
@@ -234,7 +236,18 @@ async def aimdo_vram_status(request):
     torch_reserved = stats.get('reserved_bytes.all.current', 0)
 
     ram = psutil.virtual_memory()
-    process_ram = psutil.Process().memory_info().rss
+    proc = psutil.Process()
+    process_ram = proc.memory_info().rss
+    try:
+        swap = psutil.swap_memory()
+        swap_total, swap_used = swap.total, swap.used
+    except Exception:
+        swap_total, swap_used = 0, 0
+    try:
+        _full = proc.memory_full_info()
+        process_swap = getattr(_full, 'pagefile', None) or getattr(_full, 'swap', 0)
+    except Exception:
+        process_swap = 0
     total_pinned = sum(m.get("pinned_ram", 0) for m in models)
     total_loaded_ram = sum(m.get("loaded_ram", 0) for m in models)
 
@@ -255,6 +268,9 @@ async def aimdo_vram_status(request):
         "torch_reserved": torch_reserved,
         "total_ram": ram.total,
         "used_ram": ram.used,
+        "total_swap": swap_total,
+        "used_swap": swap_used,
+        "process_swap": process_swap,
         "process_ram": process_ram,
         "pinned_ram": total_pinned,
         "loaded_ram": total_loaded_ram,

@@ -19,6 +19,7 @@ let showRamInMini = true;
 let showVramInMini = true;
 let showGpuInMini = true;
 let showCpuInMini = true;
+let showPagefileInMini = false;
 let showHwNames = true;
 let showTitle = true;
 let showExecBtn = false;  // optional play / cancel-running button in the header
@@ -612,6 +613,7 @@ function createPanel() {
     if (typeof saved.showVramInMini === "boolean") showVramInMini = saved.showVramInMini;
     if (typeof saved.showGpuInMini === "boolean") showGpuInMini = saved.showGpuInMini;
     if (typeof saved.showCpuInMini === "boolean") showCpuInMini = saved.showCpuInMini;
+    if (typeof saved.showPagefileInMini === "boolean") showPagefileInMini = saved.showPagefileInMini;
     if (typeof saved.showHwNames === "boolean") showHwNames = saved.showHwNames;
     if (typeof saved.showTitle === "boolean") showTitle = saved.showTitle;
     if (typeof saved.showExecBtn === "boolean") showExecBtn = saved.showExecBtn;
@@ -986,6 +988,15 @@ function createPanel() {
         </div>
         <div class="aimdo-mini-track mini-cpu-bar"><div class="aimdo-mini-fill mini-cpu-fill"></div></div>
     </div>
+    <div class="mini-pagefile-section">
+        <div class="aimdo-mini-row">
+            <span class="mini-pagefile-label">Page</span><span class="mini-pagefile-usage"></span>
+        </div>
+        <div class="aimdo-mini-track mini-pagefile-bar">
+            <div class="aimdo-seg aimdo-seg-python"></div>
+            <div class="aimdo-seg aimdo-seg-other"></div>
+        </div>
+    </div>
     <div class="mini-gpu-section">
         <div class="aimdo-mini-row mini-gpu-row">
             <span class="mini-gpu-label">GPU</span><span class="mini-gpu-header-value"></span>
@@ -1018,6 +1029,10 @@ function createPanel() {
         cpuLabel: miniBar.querySelector(".mini-cpu-label"),
         cpuUsage: miniBar.querySelector(".mini-cpu-usage"),
         cpuFill: miniBar.querySelector(".mini-cpu-fill"),
+        pagefileSection: miniBar.querySelector(".mini-pagefile-section"),
+        pagefileLabel: miniBar.querySelector(".mini-pagefile-label"),
+        pagefileUsage: miniBar.querySelector(".mini-pagefile-usage"),
+        pagefileSegs: miniBar.querySelectorAll(".mini-pagefile-bar > .aimdo-seg"),
         gpuSection: miniBar.querySelector(".mini-gpu-section"),
         gpuRow: miniBar.querySelector(".mini-gpu-row"),
         gpuLabel: miniBar.querySelector(".mini-gpu-label"),
@@ -1614,6 +1629,8 @@ function createPanel() {
         () => showVramInMini, v => { showVramInMini = v; }, "showVramInMini");
     const showCpu = makeToggleItem("CPU",
         () => showCpuInMini, v => { showCpuInMini = v; }, "showCpuInMini");
+    const showPagefile = makeToggleItem("Pagefile",
+        () => showPagefileInMini, v => { showPagefileInMini = v; }, "showPagefileInMini");
     // labeled "util" since these live under the nested GPU submenu now
     const showGpu = makeToggleItem("util",
         () => showGpuInMini, v => { showGpuInMini = v; }, "showGpuInMini");
@@ -1632,6 +1649,7 @@ function createPanel() {
     miniSubmenu.appendChild(showRam.item);
     miniSubmenu.appendChild(showVram.item);
     miniSubmenu.appendChild(showCpu.item);
+    miniSubmenu.appendChild(showPagefile.item);
     // GPU's util / temp / power get their own submenu since they're closely related —
     // keeps the Mini-view list flat and groups the three multibar toggles together.
     // Each is independent: any combination can be on/off, including just temp+power.
@@ -1970,6 +1988,16 @@ function ensureStructure(body) {
                 <span class="content-info-state"></span>
             </div>
         </div>
+        <div class="content-pagefile-section" style="margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
+                <span>Pagefile</span>
+                <span class="content-pagefile-usage"></span>
+            </div>
+            <div class="content-pagefile-bar" style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
+                <div class="aimdo-seg aimdo-seg-python"></div>
+                <div class="aimdo-seg aimdo-seg-other"></div>
+            </div>
+        </div>
     `;
     const _q = (s) => contentDiv.querySelector(s);
     // .aimdo-seg-other: [0]=RAM block, [1]=VRAM block
@@ -2005,6 +2033,9 @@ function ensureStructure(body) {
         infoTemp: _q(".content-info-temp"),
         infoPower: _q(".content-info-power"),
         infoState: _q(".content-info-state"),
+        pagefileSection: _q(".content-pagefile-section"),
+        pagefileUsage: _q(".content-pagefile-usage"),
+        pagefileSegs: contentDiv.querySelectorAll(".content-pagefile-bar > .aimdo-seg"),
     };
     body.appendChild(contentDiv);
 
@@ -2486,6 +2517,23 @@ function renderData(body, data) {
     } else {
         m.cpuSection.style.display = "none";
     }
+    if (data.total_swap > 0 && showPagefileInMini) {
+        m.pagefileSection.style.display = "";
+        const swapPct = Math.round(data.used_swap / data.total_swap * 100);
+        const procSwap = Math.min(data.process_swap || 0, data.used_swap);
+        const procSwapPct = data.total_swap > 0 ? (procSwap / data.total_swap * 100) : 0;
+        const otherSwapPct = Math.max(0, (data.used_swap - procSwap) / data.total_swap * 100);
+        m.pagefileUsage.textContent = _n
+            ? (_u ? `${formatBytes(data.used_swap)}|${formatBytes(data.total_swap)}` : (swapPct < 10 ? "0" : "") + swapPct + "%")
+            : "";
+        m.pagefileSegs[0].style.width = procSwapPct + "%";
+        m.pagefileSegs[0].title = "process: " + formatBytes(procSwap);
+        m.pagefileSegs[1].style.width = otherSwapPct + "%";
+        m.pagefileSegs[1].title = "other: " + formatBytes(data.used_swap - procSwap);
+        m.pagefileLabel.style.display = miniShowType ? "" : "none";
+    } else {
+        m.pagefileSection.style.display = "none";
+    }
     // each bar is independently toggleable; section only hides when ALL three are off
     // (or unavailable). util is no longer special — it can be off while temp/power show.
     const _showUtil = data.gpu_util != null && showGpuInMini;
@@ -2633,6 +2681,19 @@ function renderData(body, data) {
     } else {
         cr.infoState.style.color = "";
         cr.infoState.textContent = "● idle";
+    }
+    if (data.total_swap > 0) {
+        cr.pagefileSection.style.display = "";
+        const procSwap = Math.min(data.process_swap || 0, data.used_swap);
+        const procSwapPct = procSwap / data.total_swap * 100;
+        const otherSwapPct = Math.max(0, (data.used_swap - procSwap) / data.total_swap * 100);
+        cr.pagefileUsage.textContent = `${formatBytes(data.used_swap)}|${formatBytes(data.total_swap)}`;
+        cr.pagefileSegs[0].style.width = procSwapPct + "%";
+        cr.pagefileSegs[0].title = "process: " + formatBytes(procSwap);
+        cr.pagefileSegs[1].style.width = otherSwapPct + "%";
+        cr.pagefileSegs[1].title = "other: " + formatBytes(data.used_swap - procSwap);
+    } else {
+        cr.pagefileSection.style.display = "none";
     }
 
     // sync canvas backing to device pixels: visual viewport px × devicePixelRatio.
