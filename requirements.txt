@@ -1,1 +1,1 @@
-pynvml
+pynvml # for GPU util/power/temp only
