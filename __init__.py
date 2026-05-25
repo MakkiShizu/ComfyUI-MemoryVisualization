@@ -248,6 +248,15 @@ async def aimdo_vram_status(request):
         process_swap = getattr(_full, 'pagefile', None) or getattr(_full, 'swap', 0)
     except Exception:
         process_swap = 0
+
+    disk_read = disk_write = None
+    if request.query.get("disk") == "1":
+        try:
+            d = psutil.disk_io_counters()
+            if d is not None:
+                disk_read, disk_write = d.read_bytes, d.write_bytes
+        except Exception:
+            pass
     total_pinned = sum(m.get("pinned_ram", 0) for m in models)
     total_loaded_ram = sum(m.get("loaded_ram", 0) for m in models)
 
@@ -271,6 +280,8 @@ async def aimdo_vram_status(request):
         "total_swap": swap_total,
         "used_swap": swap_used,
         "process_swap": process_swap,
+        "disk_read": disk_read,
+        "disk_write": disk_write,
         "process_ram": process_ram,
         "pinned_ram": total_pinned,
         "loaded_ram": total_loaded_ram,

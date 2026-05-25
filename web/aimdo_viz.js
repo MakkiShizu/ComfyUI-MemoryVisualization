@@ -20,6 +20,8 @@ let showVramInMini = true;
 let showGpuInMini = true;
 let showCpuInMini = true;
 let showPagefileInMini = false;
+let showDiskInMini = false;
+const diskState = { prevRead: null, prevWrite: null, prevTime: 0, peakRead: 1, peakWrite: 1 };
 let showHwNames = true;
 let showTitle = true;
 let showExecBtn = false;  // optional play / cancel-running button in the header
@@ -614,6 +616,7 @@ function createPanel() {
     if (typeof saved.showGpuInMini === "boolean") showGpuInMini = saved.showGpuInMini;
     if (typeof saved.showCpuInMini === "boolean") showCpuInMini = saved.showCpuInMini;
     if (typeof saved.showPagefileInMini === "boolean") showPagefileInMini = saved.showPagefileInMini;
+    if (typeof saved.showDiskInMini === "boolean") showDiskInMini = saved.showDiskInMini;
     if (typeof saved.showHwNames === "boolean") showHwNames = saved.showHwNames;
     if (typeof saved.showTitle === "boolean") showTitle = saved.showTitle;
     if (typeof saved.showExecBtn === "boolean") showExecBtn = saved.showExecBtn;
@@ -797,10 +800,14 @@ function createPanel() {
         // to reach the dock drop zone. mouseup re-clamps before persisting.
         const useRo = dragging ? rightOffset : ro;
         const useBo = dragging ? bottomOffset : bo;
-        panel.style.left = ((b.right - w - useRo) / panelScale) + "px";
-        panel.style.top = ((b.bottom - h - useBo) / panelScale) + "px";
+        const tx = (b.right - w - useRo) / panelScale;
+        const ty = (b.bottom - h - useBo) / panelScale;
+        panel.style.left = "0";
+        panel.style.top = "0";
         panel.style.right = "auto";
         panel.style.bottom = "auto";
+        // translate3d keeps positioning on the compositor — no layout per drag move.
+        panel.style.transform = `translate3d(${tx}px, ${ty}px, 0)`;
     }
     window.addEventListener("resize", () => { applyConstraints(); applyOffsets(); positionDockedBody(); });
 
@@ -997,6 +1004,19 @@ function createPanel() {
             <div class="aimdo-seg aimdo-seg-other"></div>
         </div>
     </div>
+    <div class="mini-disk-section is-multibar">
+        <div class="aimdo-mini-row mini-disk-row">
+            <span class="mini-disk-label">Disk</span><span class="mini-disk-header-value"></span>
+        </div>
+        <div class="aimdo-mini-inline mini-disk-read-row">
+            <div class="aimdo-mini-track mini-disk-read-bar"><div class="aimdo-mini-fill mini-disk-read-fill"></div></div>
+            <span class="mini-disk-read-usage"></span>
+        </div>
+        <div class="aimdo-mini-inline mini-disk-write-row">
+            <div class="aimdo-mini-track mini-disk-write-bar"><div class="aimdo-mini-fill mini-disk-write-fill"></div></div>
+            <span class="mini-disk-write-usage"></span>
+        </div>
+    </div>
     <div class="mini-gpu-section">
         <div class="aimdo-mini-row mini-gpu-row">
             <span class="mini-gpu-label">GPU</span><span class="mini-gpu-header-value"></span>
@@ -1033,6 +1053,12 @@ function createPanel() {
         pagefileLabel: miniBar.querySelector(".mini-pagefile-label"),
         pagefileUsage: miniBar.querySelector(".mini-pagefile-usage"),
         pagefileSegs: miniBar.querySelectorAll(".mini-pagefile-bar > .aimdo-seg"),
+        diskSection: miniBar.querySelector(".mini-disk-section"),
+        diskLabel: miniBar.querySelector(".mini-disk-label"),
+        diskReadUsage: miniBar.querySelector(".mini-disk-read-usage"),
+        diskReadFill: miniBar.querySelector(".mini-disk-read-fill"),
+        diskWriteUsage: miniBar.querySelector(".mini-disk-write-usage"),
+        diskWriteFill: miniBar.querySelector(".mini-disk-write-fill"),
         gpuSection: miniBar.querySelector(".mini-gpu-section"),
         gpuRow: miniBar.querySelector(".mini-gpu-row"),
         gpuLabel: miniBar.querySelector(".mini-gpu-label"),
@@ -1272,6 +1298,9 @@ function createPanel() {
 
     let dragging = false, dx = 0, dy = 0;
     let dragSavedPointerEvents = null;
+    let dragW = 0, dragH = 0;
+    let dragRafPending = false;
+    let dragLastX = 0, dragLastY = 0;
     // pendingDrag distinguishes "clicking a button in the header" from "grabbing to drag".
     // mousedown only arms; we wait for >DRAG_THRESHOLD px of movement before promoting to a real drag,
     // so a click on unload/reset/popout never triggers an undock.
@@ -1295,6 +1324,9 @@ function createPanel() {
         pendingDrag = null;
         dragSavedPointerEvents = panel.style.pointerEvents || "";
         panel.style.pointerEvents = "none";
+        const r0 = panel.getBoundingClientRect();
+        dragW = r0.width;
+        dragH = r0.height;
         ensureDropZone();
     }
 
@@ -1337,6 +1369,14 @@ function createPanel() {
             e.stopPropagation();
         }
     }, true);
+    function flushDrag() {
+        dragRafPending = false;
+        if (!dragging) return;
+        const b = getCanvasBounds();
+        rightOffset = b.right - (dragLastX - dx) - dragW;
+        bottomOffset = b.bottom - (dragLastY - dy) - dragH;
+        applyOffsets();
+    }
     document.addEventListener("mousemove", (e) => {
         if (pendingDrag) {
             const adx = Math.abs(e.clientX - pendingDrag.startX);
@@ -1345,11 +1385,12 @@ function createPanel() {
             promoteDrag(e);
         }
         if (!dragging) return;
-        const b = getCanvasBounds();
-        const r = panel.getBoundingClientRect();
-        rightOffset = b.right - (e.clientX - dx) - r.width;
-        bottomOffset = b.bottom - (e.clientY - dy) - r.height;
-        applyOffsets();
+        dragLastX = e.clientX;
+        dragLastY = e.clientY;
+        if (!dragRafPending) {
+            dragRafPending = true;
+            requestAnimationFrame(flushDrag);
+        }
     });
     // shared drag-end cleanup so a mouseup off-window (or alt-tab during drag) doesn't
     // leave pendingDrag armed, pointer-events stuck at "none", or drop zones in the DOM.
@@ -1631,6 +1672,8 @@ function createPanel() {
         () => showCpuInMini, v => { showCpuInMini = v; }, "showCpuInMini");
     const showPagefile = makeToggleItem("Pagefile",
         () => showPagefileInMini, v => { showPagefileInMini = v; }, "showPagefileInMini");
+    const showDisk = makeToggleItem("Disk I/O",
+        () => showDiskInMini, v => { showDiskInMini = v; }, "showDiskInMini");
     // labeled "util" since these live under the nested GPU submenu now
     const showGpu = makeToggleItem("util",
         () => showGpuInMini, v => { showGpuInMini = v; }, "showGpuInMini");
@@ -1650,6 +1693,7 @@ function createPanel() {
     miniSubmenu.appendChild(showVram.item);
     miniSubmenu.appendChild(showCpu.item);
     miniSubmenu.appendChild(showPagefile.item);
+    miniSubmenu.appendChild(showDisk.item);
     // GPU's util / temp / power get their own submenu since they're closely related —
     // keeps the Mini-view list flat and groups the three multibar toggles together.
     // Each is independent: any combination can be on/off, including just temp+power.
@@ -2517,6 +2561,32 @@ function renderData(body, data) {
     } else {
         m.cpuSection.style.display = "none";
     }
+    if (showDiskInMini && data.disk_read != null && data.disk_write != null) {
+        m.diskSection.style.display = "";
+        const now = performance.now();
+        let readRate = 0, writeRate = 0;
+        if (diskState.prevRead != null && diskState.prevTime > 0) {
+            const dt = (now - diskState.prevTime) / 1000;
+            if (dt > 0) {
+                readRate = Math.max(0, (data.disk_read - diskState.prevRead) / dt);
+                writeRate = Math.max(0, (data.disk_write - diskState.prevWrite) / dt);
+            }
+        }
+        diskState.prevRead = data.disk_read;
+        diskState.prevWrite = data.disk_write;
+        diskState.prevTime = now;
+        if (readRate > diskState.peakRead) diskState.peakRead = readRate;
+        if (writeRate > diskState.peakWrite) diskState.peakWrite = writeRate;
+        m.diskReadUsage.textContent = _n ? (formatBytes(readRate) + "/s ↓") : "";
+        m.diskWriteUsage.textContent = _n ? (formatBytes(writeRate) + "/s ↑") : "";
+        m.diskReadFill.style.width = (readRate / diskState.peakRead * 100) + "%";
+        m.diskWriteFill.style.width = (writeRate / diskState.peakWrite * 100) + "%";
+        m.diskLabel.style.display = miniShowType ? "" : "none";
+    } else {
+        m.diskSection.style.display = "none";
+        diskState.prevRead = null;
+        diskState.prevTime = 0;
+    }
     if (data.total_swap > 0 && showPagefileInMini) {
         m.pagefileSection.style.display = "";
         const swapPct = Math.round(data.used_swap / data.total_swap * 100);
@@ -2534,11 +2604,14 @@ function renderData(body, data) {
     } else {
         m.pagefileSection.style.display = "none";
     }
-    // each bar is independently toggleable; section only hides when ALL three are off
-    // (or unavailable). util is no longer special — it can be off while temp/power show.
-    const _showUtil = data.gpu_util != null && showGpuInMini;
-    const _showTemp = data.gpu_temp != null && miniShowGpuTemp;
-    const _showPower = data.gpu_power != null && data.gpu_power_limit != null && miniShowGpuPower;
+    // each bar is independently toggleable; null data shows "N/A" rather than hiding,
+    // so a missing pynvml doesn't make the whole section vanish silently.
+    const _showUtil = showGpuInMini;
+    const _showTemp = miniShowGpuTemp;
+    const _showPower = miniShowGpuPower;
+    const _utilOk = data.gpu_util != null;
+    const _tempOk = data.gpu_temp != null;
+    const _powerOk = data.gpu_power != null && data.gpu_power_limit != null;
     const _activeBars = (_showUtil ? 1 : 0) + (_showTemp ? 1 : 0) + (_showPower ? 1 : 0);
     if (_activeBars > 0) {
         m.gpuSection.style.display = "";
@@ -2557,45 +2630,57 @@ function renderData(body, data) {
         // util row
         m.utilRow.style.display = _showUtil ? "" : "none";
         if (_showUtil) {
-            const gpuColor = gpuUtilColor(data.gpu_util);
-            m.gpuFill.style.background = gpuColor;
-            m.gpuFill.style.width = `${data.gpu_util}%`;
-            m.gpuUsage.innerHTML = _n
-                ? `<span style="color:${gpuColor};">${(data.gpu_util < 10 ? "0" : "") + data.gpu_util}%</span>`
-                : "";
+            if (_utilOk) {
+                const gpuColor = gpuUtilColor(data.gpu_util);
+                m.gpuFill.style.background = gpuColor;
+                m.gpuFill.style.width = `${data.gpu_util}%`;
+                m.gpuUsage.innerHTML = _n
+                    ? `<span style="color:${gpuColor};">${(data.gpu_util < 10 ? "0" : "") + data.gpu_util}%</span>`
+                    : "";
+            } else {
+                m.gpuFill.style.width = "0%";
+                m.gpuUsage.textContent = "N/A";
+            }
         }
 
         // temp row — 100°C is full scale; units-off uses "%" since the bar already
         // treats 100°C as the denominator (75°C → 75% of the bar full).
         m.tempRow.style.display = _showTemp ? "" : "none";
         if (_showTemp) {
-            const tempColor = gpuTempColor(data.gpu_temp);
-            m.tempFill.style.background = tempColor;
-            m.tempFill.style.width = `${Math.min(100, data.gpu_temp)}%`;
-            // units-off reads the bar's clamped 0–100°C scale, so cap the displayed digit
-            // at 100 to match the bar fill (an over-temp condition shows "100%" rather
-            // than e.g. "105%" which would falsely look like overflow past the bar).
-            const tempDisplay = _u ? `${data.gpu_temp}&deg;C` : `${Math.min(100, data.gpu_temp)}%`;
-            m.tempUsage.innerHTML = _n
-                ? `<span style="color:${tempColor};">${tempDisplay}</span>`
-                : "";
+            if (_tempOk) {
+                const tempColor = gpuTempColor(data.gpu_temp);
+                m.tempFill.style.background = tempColor;
+                m.tempFill.style.width = `${Math.min(100, data.gpu_temp)}%`;
+                const tempDisplay = _u ? `${data.gpu_temp}&deg;C` : `${Math.min(100, data.gpu_temp)}%`;
+                m.tempUsage.innerHTML = _n
+                    ? `<span style="color:${tempColor};">${tempDisplay}</span>`
+                    : "";
+            } else {
+                m.tempFill.style.width = "0%";
+                m.tempUsage.textContent = "N/A";
+            }
         }
 
         // power row — fill is draw/limit; value is W or % depending on the Units toggle
         m.powerRow.style.display = _showPower ? "" : "none";
         if (_showPower) {
-            const powerColor = gpuPowerColor(data.gpu_power, data.gpu_power_limit);
-            m.powerFill.style.background = powerColor;
-            const powerPct = data.gpu_power_limit > 0
-                ? Math.min(100, data.gpu_power / data.gpu_power_limit * 100)
-                : 0;
-            m.powerFill.style.width = `${powerPct}%`;
-            const powerText = _u
-                ? formatPower(data.gpu_power, data.gpu_power_limit)
-                : asPct(data.gpu_power, data.gpu_power_limit);
-            m.powerUsage.innerHTML = _n
-                ? `<span style="color:${powerColor};">${powerText}</span>`
-                : "";
+            if (_powerOk) {
+                const powerColor = gpuPowerColor(data.gpu_power, data.gpu_power_limit);
+                m.powerFill.style.background = powerColor;
+                const powerPct = data.gpu_power_limit > 0
+                    ? Math.min(100, data.gpu_power / data.gpu_power_limit * 100)
+                    : 0;
+                m.powerFill.style.width = `${powerPct}%`;
+                const powerText = _u
+                    ? formatPower(data.gpu_power, data.gpu_power_limit)
+                    : asPct(data.gpu_power, data.gpu_power_limit);
+                m.powerUsage.innerHTML = _n
+                    ? `<span style="color:${powerColor};">${powerText}</span>`
+                    : "";
+            } else {
+                m.powerFill.style.width = "0%";
+                m.powerUsage.textContent = "N/A";
+            }
         }
 
         // single-bar mode: lift the visible value into the title row so the section
@@ -2877,7 +2962,8 @@ app.registerExtension({
 
         async function poll() {
             try {
-                const resp = await api.fetchApi("/aimdo/vram");
+                const url = showDiskInMini ? "/aimdo/vram?disk=1" : "/aimdo/vram";
+                const resp = await api.fetchApi(url);
                 const data = await resp.json();
                 renderData(body, data);
             } catch (e) {

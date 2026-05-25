@@ -235,6 +235,7 @@
     flex-direction: row !important;
     align-items: center;
     zoom: 1 !important;
+    transform: none !important;
 }
 
 /* ---------------- header ---------------- */
@@ -365,18 +366,22 @@
     align-items: center;
     gap: 4px;
 }
-.mini-gpu-section.is-multibar .aimdo-mini-inline {
+.mini-gpu-section.is-multibar .aimdo-mini-inline,
+.mini-disk-section.is-multibar .aimdo-mini-inline {
     line-height: 1;
     font-size: 8px;
 }
-.mini-gpu-section.is-multibar .aimdo-mini-inline .aimdo-mini-track { height: 3px; }
+.mini-gpu-section.is-multibar .aimdo-mini-inline .aimdo-mini-track,
+.mini-disk-section.is-multibar .aimdo-mini-inline .aimdo-mini-track { height: 3px; }
 .aimdo-mini-inline .aimdo-mini-track {
     flex: 1 1 0;
     margin-bottom: 0;
 }
 .aimdo-mini-inline > .mini-gpu-usage,
 .aimdo-mini-inline > .mini-temp-usage,
-.aimdo-mini-inline > .mini-power-usage {
+.aimdo-mini-inline > .mini-power-usage,
+.aimdo-mini-inline > .mini-disk-read-usage,
+.aimdo-mini-inline > .mini-disk-write-usage {
     flex-shrink: 0;
     text-align: right;
     min-width: 32px;
@@ -397,6 +402,8 @@
     width: 0;
     transition: width 0.35s ease-out, background 0.35s ease-out;
 }
+.mini-disk-read-fill  { background: var(--aimdo-pinned); }
+.mini-disk-write-fill { background: var(--aimdo-vram); }
 
 /* docked mini-bar: horizontal, fixed-width sections */
 #aimdo-viz-panel.aimdo-docked .aimdo-mini-bar {
