@@ -21,7 +21,12 @@ let showGpuInMini = true;
 let showCpuInMini = true;
 let showPagefileInMini = false;
 let showDiskInMini = false;
-const diskState = { prevRead: null, prevWrite: null, prevTime: 0, peakRead: 1, peakWrite: 1 };
+const DISK_PEAK_FLOOR = 50 * 1024 * 1024;  // 50 MB/s — small enough idle activity is visible
+const DISK_PEAK_HALFLIFE = 30;             // seconds — peak decays back toward floor when quiet
+const diskState = {
+    prevRead: null, prevWrite: null, prevTime: 0,
+    peakRead: DISK_PEAK_FLOOR, peakWrite: DISK_PEAK_FLOOR,
+};
 let showHwNames = true;
 let showTitle = true;
 let showExecBtn = false;  // optional play / cancel-running button in the header
@@ -2570,13 +2575,14 @@ function renderData(body, data) {
             if (dt > 0) {
                 readRate = Math.max(0, (data.disk_read - diskState.prevRead) / dt);
                 writeRate = Math.max(0, (data.disk_write - diskState.prevWrite) / dt);
+                const decay = Math.pow(0.5, dt / DISK_PEAK_HALFLIFE);
+                diskState.peakRead = Math.max(readRate, diskState.peakRead * decay, DISK_PEAK_FLOOR);
+                diskState.peakWrite = Math.max(writeRate, diskState.peakWrite * decay, DISK_PEAK_FLOOR);
             }
         }
         diskState.prevRead = data.disk_read;
         diskState.prevWrite = data.disk_write;
         diskState.prevTime = now;
-        if (readRate > diskState.peakRead) diskState.peakRead = readRate;
-        if (writeRate > diskState.peakWrite) diskState.peakWrite = writeRate;
         m.diskReadUsage.textContent = _n ? (formatBytes(readRate) + "/s ↓") : "";
         m.diskWriteUsage.textContent = _n ? (formatBytes(writeRate) + "/s ↑") : "";
         m.diskReadFill.style.width = (readRate / diskState.peakRead * 100) + "%";
