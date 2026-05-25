@@ -813,6 +813,7 @@ function createPanel() {
     let dockSectionWidth = (typeof saved.dockSectionWidth === "number" && saved.dockSectionWidth > 40)
         ? saved.dockSectionWidth : 110;
     let savedPanelCss = null;     // snapshot before docking so undock can restore exact styles
+    let preDockCollapsed = null;
     let dropZoneLeft = null;      // present only while a drag is in progress
     let dropZoneRight = null;
     let dropZoneHoverSide = null; // "left" | "right" | null
@@ -887,6 +888,7 @@ function createPanel() {
             saveState({ dockSide });
             return true;
         }
+        preDockCollapsed = collapsed;
         if (!collapsed) {
             collapsed = true;
             body.style.display = "none";
@@ -917,28 +919,26 @@ function createPanel() {
     function undock() {
         autoDockPending = false;  // explicit undock cancels any in-flight auto-redock poll
         if (!isDocked) return;
-        const wasExpanded = dockExpanded;
         dockExpanded = false;
         panel.classList.remove("aimdo-docked", "aimdo-docked-expanded");
-        // clear the overlay positioning we set on the body so it returns to normal in-flow layout
         body.style.top = "";
         body.style.left = "";
         if (savedPanelCss != null) panel.style.cssText = savedPanelCss;
         savedPanelCss = null;
         document.body.appendChild(panel);
         isDocked = false;
-        // if they were viewing the full body docked, keep it visible when re-floating
-        if (wasExpanded) {
-            collapsed = false;
-            body.style.display = "flex";
-            miniBar.style.display = "none";
-            toggleBtn.textContent = "−";
+        const restoreCollapsed = preDockCollapsed != null ? preDockCollapsed : false;
+        preDockCollapsed = null;
+        collapsed = restoreCollapsed;
+        body.style.display = collapsed ? "none" : "flex";
+        miniBar.style.display = collapsed ? "block" : "none";
+        toggleBtn.textContent = collapsed ? "+" : "−";
+        if (!collapsed) {
             const s = loadState();
             const h = s.height;
             panel.style.height = h != null ? (Math.min(h, window.innerHeight) / panelScale + "px") : "";
-            saveState({ collapsed });
         }
-        saveState({ docked: false });
+        saveState({ collapsed, docked: false });
         applyConstraints();
         applyOffsets();
     }
