@@ -81,6 +81,13 @@ const cssLoaded = new Promise((resolve) => {
     document.head.appendChild(link);
 });
 
+// The panel uses a custom element, hook disconnectedCallback to detect whena something removes it from the DOM
+if (!customElements.get("aimdo-viz-panel")) {
+    customElements.define("aimdo-viz-panel", class extends HTMLElement {
+        disconnectedCallback() { if (this._onDisconnect) this._onDisconnect(); }
+    });
+}
+
 function parseRgbTriplet(s) {
     const parts = s.split(",").map(x => parseInt(x.trim(), 10));
     if (parts.length === 3 && parts.every(Number.isFinite)) return parts;
@@ -625,7 +632,7 @@ function createPanel() {
 
     // structural styles live in aimdo_viz.css; CSS variables on :root carry the palette.
     // theme switches go through applyPalette → setCssVars; no per-element repaint here.
-    const panel = document.createElement("div");
+    const panel = document.createElement("aimdo-viz-panel");
     panel.id = "aimdo-viz-panel";
     panel.style.zoom = panelScale;
     panel._scale = panelScale;
@@ -708,7 +715,6 @@ function createPanel() {
     }
     function invalidateChromeCache() { chromeCache = null; }
     window.addEventListener("resize", invalidateChromeCache);
-    // Observe the actionbar directly (not body) so unrelated DOM churn doesn't bust the cache.
     let chromeObserversAttached = false;
     function attachChromeObservers() {
         if (chromeObserversAttached) return;
@@ -875,14 +881,12 @@ function createPanel() {
         const ac = getActionbarContainer();
         if (!ac) return false;
         if (side === "left" || side === "right") dockSide = side;
-        // CSS order: -1 puts the panel before existing actionbar items (default order 0), +1 after
         if (isDocked) {
             panel.style.order = dockSide === "left" ? "-1" : "1";
             if (panel.parentNode !== ac) ac.appendChild(panel);
             saveState({ dockSide });
             return true;
         }
-        // collapsed mode shows the mini-bar; CSS overrides to lay it out horizontally
         if (!collapsed) {
             collapsed = true;
             body.style.display = "none";
@@ -890,7 +894,6 @@ function createPanel() {
             toggleBtn.textContent = "+";
         }
         dockExpanded = false;
-        // capture before adding order/class so undock restores clean floating styles
         savedPanelCss = panel.style.cssText;
         panel.classList.add("aimdo-docked");
         panel.style.order = dockSide === "left" ? "-1" : "1";
@@ -907,6 +910,9 @@ function createPanel() {
         panel.style.order = dockSide === "left" ? "-1" : "1";
         ac.appendChild(panel);
     }
+    // The panel is a custom element — its disconnectedCallback fires the instant Vue
+    // (or anything else) removes it from the DOM.
+    panel._onDisconnect = () => { if (isDocked) queueMicrotask(reconcileDocking); };
 
     function undock() {
         autoDockPending = false;  // explicit undock cancels any in-flight auto-redock poll
@@ -1896,7 +1902,6 @@ function createPanel() {
     body._miniBar = miniBar;
     body._panel = panel;
     body._updateExecBtnState = updateExecBtnState;
-    body._reconcileDocking = reconcileDocking;
     return body;
 }
 
@@ -2814,7 +2819,6 @@ app.registerExtension({
                 const resp = await api.fetchApi("/aimdo/vram");
                 const data = await resp.json();
                 renderData(body, data);
-                body._reconcileDocking?.();
             } catch (e) {
                 body.innerHTML = `<div style="color:#aa5555;">Error fetching data</div>`;
                 refs = null;
