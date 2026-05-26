@@ -10,6 +10,10 @@ const HISTORY_TICK_MS = 1000;    // history snapshots fire at most this often re
 const execState = { running: false, node: null, progress: null };
 let peakVramUsed = 0;
 let gpuLineVisible = true;
+let graphStyle = "area";          // "area" | "dots" | "ticker" | "bars"
+let graphVramColor = null;        // null = use theme C.vram; otherwise hex override
+let graphTotalColor = null;       // null = use theme C.totalLine; otherwise hex override
+let graphTotalSmoothness = 0;     // 0 = raw, larger = wider moving-average window radius
 let modelCollapsed = {};
 let colorModelBars = false;
 let colorModelStroke = true;
@@ -227,6 +231,7 @@ const history = {
     total_vram: 1,
     head: 0,
     len: 0,
+    pushCount: 0,       // monotonically increasing total pushes; used as absolute sample id
     viewOffset: 0,      // points back from newest; 0 = right edge (live)
     followLive: true,
     execEvents: [],     // {type: "start"|"end", time: ms} — drawn as vertical marks
@@ -278,6 +283,7 @@ function pushHistory(data) {
     history.times[i] = Date.now();
     history.head = (i + 1) % HISTORY_BUFFER;
     if (history.len < HISTORY_BUFFER) history.len++;
+    history.pushCount++;
     // when scrolled back, advance viewOffset so the user's pinned window keeps
     // showing the same chronological data instead of sliding with new points.
     if (!history.followLive) {
@@ -381,6 +387,7 @@ async function loadHistory() {
         copy(history.gpu_util, data.gpu_util);
         history.len = Math.min(data.len, HISTORY_BUFFER);
         history.head = (typeof data.head === "number" ? data.head : history.len) % HISTORY_BUFFER;
+        history.pushCount = history.len;  // restored buffer starts the pushCount epoch at len
         if (Array.isArray(data.execEvents)) history.execEvents = data.execEvents.slice(-EXEC_EVENTS_MAX);
     } catch (err) { console.warn("aimdo-viz: history load failed", err); }
 }
@@ -414,40 +421,218 @@ function drawGraph(ctx, w, h) {
     const xFor = i => (GRAPH_POINTS - visible + i) * stepX;
     const at = (arr, i) => historyGet(arr, startIdx + i);
 
-    // aimdo area
-    ctx.beginPath();
-    ctx.moveTo(dataStartX, h);
-    for (let i = 0; i < visible; i++) {
-        ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i)));
+    // smoothed total-used values, precomputed once per frame and shared by the total
+    // line, dots, and area-"other" layer so dots/areas stay at-or-below the line.
+    const smoothN = graphTotalSmoothness;
+    const totalValues = new Float64Array(visible);
+    for (let i = 0; i < visible; i++) totalValues[i] = total - at(history.free_vram, i);
+    let smoothedValues;
+    if (smoothN > 0 && visible > 0) {
+        smoothedValues = new Float64Array(visible);
+        // sliding window sum — each step adds the entering sample and drops the leaving one.
+        let sum = 0, count = 0;
+        const initEnd = Math.min(visible - 1, smoothN);
+        for (let k = 0; k <= initEnd; k++) { sum += totalValues[k]; count++; }
+        smoothedValues[0] = sum / count;
+        for (let i = 1; i < visible; i++) {
+            const add = i + smoothN;
+            const drop = i - smoothN - 1;
+            if (add < visible) { sum += totalValues[add]; count++; }
+            if (drop >= 0) { sum -= totalValues[drop]; count--; }
+            smoothedValues[i] = sum / count;
+        }
+    } else {
+        smoothedValues = totalValues;
     }
-    ctx.lineTo(xFor(visible - 1), h);
-    ctx.closePath();
-    ctx.fillStyle = hexToRgba(C.vram, 0.35);
-    ctx.fill();
+    const valueAt = (i) => smoothedValues[i];
 
-    // torch area stacked on top of aimdo
-    ctx.beginPath();
-    ctx.moveTo(dataStartX, yFor(at(history.aimdo_usage, 0)));
-    for (let i = 0; i < visible; i++) {
-        ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i) + at(history.torch_active, i)));
-    }
-    for (let i = visible - 1; i >= 0; i--) {
-        ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i)));
-    }
-    ctx.closePath();
-    ctx.fillStyle = hexToRgba(C.torch, 0.4);
-    ctx.fill();
+    const vramHex = graphVramColor || C.vram;
+    if (graphStyle === "area") {
+        // aimdo area
+        ctx.beginPath();
+        ctx.moveTo(dataStartX, h);
+        for (let i = 0; i < visible; i++) {
+            ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i)));
+        }
+        ctx.lineTo(xFor(visible - 1), h);
+        ctx.closePath();
+        ctx.fillStyle = hexToRgba(vramHex, 0.35);
+        ctx.fill();
 
-    // total used line
-    ctx.beginPath();
-    ctx.strokeStyle = C.totalLine;
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < visible; i++) {
-        const x = xFor(i);
-        const y = yFor(total - at(history.free_vram, i));
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        // torch area stacked on top of aimdo
+        ctx.beginPath();
+        ctx.moveTo(dataStartX, yFor(at(history.aimdo_usage, 0)));
+        for (let i = 0; i < visible; i++) {
+            ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i) + at(history.torch_active, i)));
+        }
+        for (let i = visible - 1; i >= 0; i--) {
+            ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i)));
+        }
+        ctx.closePath();
+        ctx.fillStyle = hexToRgba(C.torch, 0.4);
+        ctx.fill();
+
+        // "other" area filling the gap between (aimdo + torch) and the (possibly smoothed)
+        // total line. Capped at the smoothed total so the fill never pokes above it.
+        const stackTop = (i) => at(history.aimdo_usage, i) + at(history.torch_active, i);
+        const topFor = (i) => Math.max(stackTop(i), valueAt(i));  // never below the stack
+        ctx.beginPath();
+        ctx.moveTo(dataStartX, yFor(stackTop(0)));
+        for (let i = 0; i < visible; i++) {
+            ctx.lineTo(xFor(i), yFor(topFor(i)));
+        }
+        for (let i = visible - 1; i >= 0; i--) {
+            ctx.lineTo(xFor(i), yFor(stackTop(i)));
+        }
+        ctx.closePath();
+        ctx.fillStyle = hexToRgba(C.other, 0.4);
+        ctx.fill();
+    } else if (graphStyle === "bars") {
+        // aggregate 3 samples per bar so each bar is thick with a visible gap between.
+        const groupSize = 3;
+        const barStep = stepX * groupSize;
+        const barW = Math.max(4, barStep - 4);
+        ctx.fillStyle = hexToRgba(vramHex, 0.55);
+        const newestAbs = history.pushCount - 1 - history.viewOffset;
+        const oldestAbs = newestAbs - visible + 1;
+        const firstGroupAbs = Math.floor(oldestAbs / groupSize) * groupSize;
+        const lastGroupAbs = Math.floor(newestAbs / groupSize) * groupSize;
+        for (let absG = firstGroupAbs; absG <= lastGroupAbs; absG += groupSize) {
+            const sStart = Math.max(absG, oldestAbs);
+            const sEnd = Math.min(absG + groupSize - 1, newestAbs);
+            let peak = 0;
+            for (let a = sStart; a <= sEnd; a++) {
+                const v = total - at(history.free_vram, a - oldestAbs);
+                if (v > peak) peak = v;
+            }
+            const centerRel = (absG - oldestAbs) + (groupSize - 1) / 2;
+            const cx = xFor(centerRel);
+            const y = yFor(peak);
+            // no integer rounding — keep gap width visually consistent via anti-aliasing
+            ctx.fillRect(cx - barW / 2, y, barW, h - y);
+        }
+    } else if (graphStyle === "ticker") {
+        // candle = aggregate of N samples, keyed off the monotonic pushCount so the
+        // same samples always land in the same candle even as the ring buffer rolls.
+        // The rightmost candle may be a partial — it builds up until the group completes.
+        const groupSize = 3;
+        const candleStep = stepX * groupSize;
+        const barW = Math.max(5, candleStep - 3);
+        const up = "#10b981";
+        const down = "#ef4444";
+        // absolute push id of the oldest and newest visible samples
+        const newestAbs = history.pushCount - 1 - history.viewOffset;
+        const oldestAbs = newestAbs - visible + 1;
+        const firstGroupAbs = Math.floor(oldestAbs / groupSize) * groupSize;
+        const lastGroupAbs = Math.floor(newestAbs / groupSize) * groupSize;
+        ctx.lineWidth = 1;
+        for (let absG = firstGroupAbs; absG <= lastGroupAbs; absG += groupSize) {
+            const sStart = Math.max(absG, oldestAbs);
+            const sEnd = Math.min(absG + groupSize - 1, newestAbs);
+            const oRel = sStart - oldestAbs;
+            const cRel = sEnd - oldestAbs;
+            const o = total - at(history.free_vram, oRel);
+            const c = total - at(history.free_vram, cRel);
+            // hi/lo over group + 1 sample on each side so wicks pick up nearby variance.
+            // Monotonic 3-sample groups otherwise give hi=max(o,c)/lo=min(o,c) → no wicks.
+            const hiLoStartRel = Math.max(0, oRel - 1);
+            const hiLoEndRel = Math.min(visible - 1, cRel + 1);
+            let hi = o, lo = o;
+            for (let rel = hiLoStartRel; rel <= hiLoEndRel; rel++) {
+                const v = total - at(history.free_vram, rel);
+                if (v > hi) hi = v;
+                if (v < lo) lo = v;
+            }
+            const yO = yFor(o), yC = yFor(c);
+            const yTop = Math.min(yO, yC);
+            const bodyH = Math.max(1, Math.abs(yC - yO));
+            // center the candle on its full would-be group span, even when clipped
+            const centerRel = (absG - oldestAbs) + (groupSize - 1) / 2;
+            const cx = xFor(centerRel);
+            const isUp = c >= o;
+            const color = isUp ? up : down;
+            const yBot = yTop + bodyH;
+            // wicks: draw only the segments that extend past the body, so the hollow
+            // up-candle stays empty inside.
+            ctx.strokeStyle = color;
+            const wickX = Math.round(cx) + 0.5;
+            const yHi = yFor(hi);
+            const yLo = yFor(lo);
+            if (yHi < yTop) {
+                ctx.beginPath();
+                ctx.moveTo(wickX, yHi);
+                ctx.lineTo(wickX, yTop);
+                ctx.stroke();
+            }
+            if (yLo > yBot) {
+                ctx.beginPath();
+                ctx.moveTo(wickX, yBot);
+                ctx.lineTo(wickX, yLo);
+                ctx.stroke();
+            }
+            const bx = Math.round(cx - barW / 2);
+            if (isUp) {
+                ctx.strokeRect(bx + 0.5, Math.round(yTop) + 0.5, barW - 1, bodyH);
+            } else {
+                ctx.fillStyle = color;
+                ctx.fillRect(bx, Math.round(yTop), barW, bodyH);
+            }
+        }
+    } else if (graphStyle === "dots") {
+        // uniform grid: row positions are fixed; visibility depends on whether the
+        // (smoothed) value covers the row, opacity fades toward the bottom of the canvas.
+        // Batched per-row so each fill style is applied once across all visible columns.
+        const dotR = 1;
+        const dotStep = 8;
+        const colStep = 2;
+        const [r, g, b] = hexToRgb(vramHex);
+        // precompute row tops so we can skip clipped rows quickly per column
+        for (let y = 0; y < h; y += dotStep) {
+            const f = 1 - y / h;
+            ctx.fillStyle = `rgba(${r},${g},${b},${(0.15 + 0.65 * f).toFixed(3)})`;
+            ctx.beginPath();
+            for (let i = 0; i < visible; i += colStep) {
+                if (y < yFor(valueAt(i))) continue;
+                const x = xFor(i);
+                ctx.moveTo(x + dotR, y);
+                ctx.arc(x, y, dotR, 0, Math.PI * 2);
+            }
+            ctx.fill();
+        }
     }
-    ctx.stroke();
+
+    // total used line — ticker already encodes the value in each candle's edge,
+    // so skip the line to avoid overlapping the bars.
+    if (graphStyle !== "ticker") {
+        ctx.beginPath();
+        ctx.strokeStyle = graphTotalColor || C.totalLine;
+        ctx.lineWidth = 1.5;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        if (smoothN > 0 && visible >= 3) {
+            // quadratic-bezier through midpoints — each original sample acts as a
+            // control point so the curve passes near every point but rounds sharp
+            // corners. Stronger smoothing slider → already-flatter values, so the
+            // curve also gets visually softer.
+            const xs = new Float64Array(visible);
+            const ys = new Float64Array(visible);
+            for (let i = 0; i < visible; i++) { xs[i] = xFor(i); ys[i] = yFor(valueAt(i)); }
+            ctx.moveTo(xs[0], ys[0]);
+            for (let i = 1; i < visible - 1; i++) {
+                const mx = (xs[i] + xs[i + 1]) / 2;
+                const my = (ys[i] + ys[i + 1]) / 2;
+                ctx.quadraticCurveTo(xs[i], ys[i], mx, my);
+            }
+            ctx.lineTo(xs[visible - 1], ys[visible - 1]);
+        } else {
+            for (let i = 0; i < visible; i++) {
+                const x = xFor(i);
+                const y = yFor(valueAt(i));
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
 
     // capacity line
     ctx.strokeStyle = C.capLine;
@@ -459,26 +644,36 @@ function drawGraph(ctx, w, h) {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // exec start/end markers — full-canvas time axis so partial-data fills don't bunch events at the right edge.
+    // exec start/end markers — positioned by interpolating each event's time into the
+    // visible sample times array, so markers stay glued to the data during scrubbing
+    // even if pollInterval drifts between ticks.
     if (history.execEvents.length) {
-        const newest = historyGet(history.times, startIdx + visible - 1);
-        const oldestVisible = historyGet(history.times, startIdx);
-        const timePerStep = visible >= 2 ? (newest - oldestVisible) / (visible - 1) : HISTORY_TICK_MS;
-        const rightEdgeX = (GRAPH_POINTS - 1) * stepX;
-        if (timePerStep > 0) {
-            ctx.lineWidth = 1;
-            ctx.setLineDash([2, 3]);
-            for (const evt of history.execEvents) {
-                const x = rightEdgeX - ((newest - evt.time) / timePerStep) * stepX;
-                if (x < 0 || x > rightEdgeX + 0.5) continue;
-                ctx.strokeStyle = evt.type === "start" ? C.torch : C.gpuUtilHi;
-                ctx.beginPath();
-                ctx.moveTo(x + 0.5, 0);
-                ctx.lineTo(x + 0.5, h);
-                ctx.stroke();
+        // cache the visible window's sample times once
+        const sampleTimes = new Float64Array(visible);
+        for (let i = 0; i < visible; i++) sampleTimes[i] = historyGet(history.times, startIdx + i);
+        const tFirst = sampleTimes[0];
+        const tLast = sampleTimes[visible - 1];
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        for (const evt of history.execEvents) {
+            if (evt.time < tFirst || evt.time > tLast) continue;
+            // binary search for the sample whose time is just <= evt.time
+            let lo = 0, hi = visible - 1;
+            while (lo < hi) {
+                const mid = (lo + hi + 1) >> 1;
+                if (sampleTimes[mid] <= evt.time) lo = mid; else hi = mid - 1;
             }
-            ctx.setLineDash([]);
+            const tA = sampleTimes[lo];
+            const tB = lo < visible - 1 ? sampleTimes[lo + 1] : tA;
+            const frac = tB > tA ? (evt.time - tA) / (tB - tA) : 0;
+            const x = xFor(lo + frac);
+            ctx.strokeStyle = evt.type === "start" ? C.torch : C.gpuUtilHi;
+            ctx.beginPath();
+            ctx.moveTo(x + 0.5, 0);
+            ctx.lineTo(x + 0.5, h);
+            ctx.stroke();
         }
+        ctx.setLineDash([]);
     }
 
     // gpu line uses its own 0..100 scale, not the VRAM byte scale
@@ -614,6 +809,10 @@ function createPanel() {
     const saved = loadState();
     if (saved.pollInterval) pollInterval = saved.pollInterval;
     if (typeof saved.gpuLineVisible === "boolean") gpuLineVisible = saved.gpuLineVisible;
+    if (typeof saved.graphStyle === "string") graphStyle = saved.graphStyle;
+    if (typeof saved.graphVramColor === "string") graphVramColor = saved.graphVramColor;
+    if (typeof saved.graphTotalColor === "string") graphTotalColor = saved.graphTotalColor;
+    if (typeof saved.graphTotalSmoothness === "number") graphTotalSmoothness = Math.max(0, Math.min(20, saved.graphTotalSmoothness | 0));
     if (typeof saved.colorModelBars === "boolean") colorModelBars = saved.colorModelBars;
     if (typeof saved.colorModelStroke === "boolean") colorModelStroke = saved.colorModelStroke;
     if (typeof saved.colorModelName === "boolean") colorModelName = saved.colorModelName;
@@ -1180,6 +1379,7 @@ function createPanel() {
         peakVramUsed = 0;
         history.head = 0;
         history.len = 0;
+        history.pushCount = 0;
         history.viewOffset = 0;
         history.followLive = true;
         history.torch_active.fill(0);
@@ -1559,8 +1759,9 @@ function createPanel() {
     const miniSubmenu = makeMenu();
     const themeSubmenu = makeMenu();
     const dockWidthSubmenu = makeMenu();
+    const graphSubmenu = makeMenu();
     const gpuSubmenu = makeMenu();
-    const allSubmenus = [scaleSubmenu, pollSubmenu, displaySubmenu, miniSubmenu, themeSubmenu, dockWidthSubmenu, gpuSubmenu];
+    const allSubmenus = [scaleSubmenu, pollSubmenu, displaySubmenu, miniSubmenu, themeSubmenu, dockWidthSubmenu, graphSubmenu, gpuSubmenu];
     function closeAllSubmenus() { for (const m of allSubmenus) m.style.display = "none"; }
 
     // submenu overlaps parent by 1px so mouse transit doesn't trigger mouseleave-close.
@@ -1815,11 +2016,120 @@ function createPanel() {
         dockWidthValSpan.textContent = dockSectionWidth + "px";
     }
 
+    // --- Graph submenu (style + VRAM color override)
+    const graphStyles = [
+        { key: "area",   label: "Area (stacked)" },
+        { key: "bars",   label: "Bars" },
+        { key: "ticker", label: "Ticker" },
+        { key: "dots",   label: "Dots (fade)" },
+    ];
+    const graphStyleItems = new Map();
+    function renderGraphStyleItems() {
+        for (const [k, item] of graphStyleItems) {
+            const on = k === graphStyle;
+            const label = graphStyles.find(s => s.key === k).label;
+            item.innerHTML = `<span class="aimdo-check">${on ? "✓" : ""}</span>${label}`;
+        }
+    }
+    for (const s of graphStyles) {
+        const item = document.createElement("div");
+        item.className = "aimdo-menu-item";
+        item.addEventListener("click", (e) => {
+            e.stopPropagation();
+            graphStyle = s.key;
+            saveState({ graphStyle });
+            renderGraphStyleItems();
+            redrawGraph();
+        });
+        graphSubmenu.appendChild(item);
+        graphStyleItems.set(s.key, item);
+    }
+    renderGraphStyleItems();
+    // color picker row
+    const colorRow = document.createElement("div");
+    colorRow.style.cssText = `padding:6px 10px;display:flex;align-items:center;gap:8px;font-size:11px;`;
+    colorRow.addEventListener("click", (e) => e.stopPropagation());
+    const colorInput = document.createElement("input");
+    colorInput.type = "color";
+    colorInput.value = graphVramColor || C.vram;
+    colorInput.style.cssText = `width:24px;height:18px;padding:0;border:none;background:transparent;cursor:pointer;`;
+    colorInput.addEventListener("input", () => {
+        graphVramColor = colorInput.value;
+        saveState({ graphVramColor });
+        redrawGraph();
+    });
+    const resetColor = document.createElement("span");
+    resetColor.textContent = "reset";
+    resetColor.style.cssText = `margin-left:auto;color:var(--aimdo-textDim);cursor:pointer;font-size:10px;`;
+    resetColor.addEventListener("click", () => {
+        graphVramColor = null;
+        saveState({ graphVramColor: null });
+        colorInput.value = C.vram;
+        redrawGraph();
+    });
+    colorRow.appendChild(colorInput);
+    colorRow.appendChild(document.createTextNode("VRAM color"));
+    colorRow.appendChild(resetColor);
+    graphSubmenu.appendChild(colorRow);
+
+    // total-line color picker row
+    const totalColorRow = document.createElement("div");
+    totalColorRow.style.cssText = colorRow.style.cssText;
+    totalColorRow.addEventListener("click", (e) => e.stopPropagation());
+    const totalColorInput = document.createElement("input");
+    totalColorInput.type = "color";
+    totalColorInput.value = graphTotalColor || C.totalLine;
+    totalColorInput.style.cssText = colorInput.style.cssText;
+    totalColorInput.addEventListener("input", () => {
+        graphTotalColor = totalColorInput.value;
+        saveState({ graphTotalColor });
+        redrawGraph();
+    });
+    const resetTotalColor = document.createElement("span");
+    resetTotalColor.textContent = "reset";
+    resetTotalColor.style.cssText = resetColor.style.cssText;
+    resetTotalColor.addEventListener("click", () => {
+        graphTotalColor = null;
+        saveState({ graphTotalColor: null });
+        totalColorInput.value = C.totalLine;
+        redrawGraph();
+    });
+    totalColorRow.appendChild(totalColorInput);
+    totalColorRow.appendChild(document.createTextNode("Total color"));
+    totalColorRow.appendChild(resetTotalColor);
+    graphSubmenu.appendChild(totalColorRow);
+
+    // total-line smoothness slider
+    const smoothRow = document.createElement("div");
+    smoothRow.style.cssText = `padding:6px 10px;display:flex;flex-direction:column;gap:4px;min-width:180px;font-size:10px;`;
+    smoothRow.addEventListener("click", (e) => e.stopPropagation());
+    const smoothLabel = document.createElement("div");
+    smoothLabel.style.cssText = `display:flex;justify-content:space-between;color:var(--aimdo-textDim);`;
+    smoothLabel.innerHTML = `<span>Total smoothness</span><span class="aimdo-sm-val">${graphTotalSmoothness}</span>`;
+    const smoothSlider = document.createElement("input");
+    smoothSlider.type = "range";
+    smoothSlider.min = "0";
+    smoothSlider.max = "20";
+    smoothSlider.step = "1";
+    smoothSlider.value = String(graphTotalSmoothness);
+    smoothSlider.style.cssText = `width:100%;accent-color:var(--aimdo-vram);cursor:pointer;`;
+    const smoothValSpan = smoothLabel.querySelector(".aimdo-sm-val");
+    smoothSlider.addEventListener("input", () => {
+        graphTotalSmoothness = parseInt(smoothSlider.value, 10);
+        smoothValSpan.textContent = String(graphTotalSmoothness);
+        saveState({ graphTotalSmoothness });
+        redrawGraph();
+    });
+    smoothRow.appendChild(smoothLabel);
+    smoothRow.appendChild(smoothSlider);
+    graphSubmenu.appendChild(smoothRow);
+
     // --- Root menu items
     rootMenu.appendChild(makeSubmenuParent("Scale", scaleSubmenu));
     rootMenu.appendChild(makeSubmenuParent("Polling interval", pollSubmenu));
     rootMenu.appendChild(makeSubmenuParent("Display", displaySubmenu));
     rootMenu.appendChild(makeSubmenuParent("Mini view", miniSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("Graph", graphSubmenu));
     rootMenu.appendChild(makeSubmenuParent("Theme", themeSubmenu));
     rootMenu.appendChild(makeSubmenuParent("Dock width", dockWidthSubmenu));
 
@@ -1991,7 +2301,7 @@ function ensureStructure(body) {
         if (!t) return;
         gpuLineVisible = !gpuLineVisible;
         saveState({ gpuLineVisible });
-        if (refs) drawGraph(refs.graphCtx, refs.graphCanvas.width, refs.graphCanvas.height);
+        redrawGraph();
         t.style.opacity = gpuLineVisible ? "1" : "0.4";
     });
     // skeleton built once; renderData mutates text/widths/visibility only.

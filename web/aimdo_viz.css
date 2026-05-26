@@ -415,7 +415,7 @@
 #aimdo-viz-panel.aimdo-docked .aimdo-mini-row {
     flex-wrap: wrap;
     gap: 0 6px;
-    margin-bottom: 1px;
+    margin-bottom: 3px;
 }
 #aimdo-viz-panel.aimdo-docked .aimdo-mini-row > span {
     flex-shrink: 0;
