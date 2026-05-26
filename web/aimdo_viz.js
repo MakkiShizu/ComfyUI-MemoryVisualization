@@ -551,10 +551,12 @@ function diffResidency(key, residency) {
 
 // draw page grid to canvas — much faster than 700 DOM divs.
 // vramColor (hex) tints static cells and the fade-in landing color per model.
+// Normal mode keeps the original yellow→vram "warm-up" pulse; per-model coloring
+// uses a lightened type color so the hue stays in the model's family.
 function drawPageGrid(ctx, cssW, residency, changeAge, panelScale, vramColor) {
     const vramHex = vramColor || C.vram;
     const vramRgb = hexToRgb(vramHex);
-    const fadeInFromRgb = lightenRgb(vramRgb, 0.55);
+    const fadeInFromRgb = vramColor ? lightenRgb(vramRgb, 0.55) : [255, 220, 0];
     const cellSize = 6;
     const gap = 1;
     const step = cellSize + gap;
