@@ -1233,6 +1233,7 @@ function createPanel() {
         // fill the PiP window; drop the fixed positioning the main-page math expects
         Object.assign(panel.style, {
             position: "static", left: "auto", top: "auto", right: "auto", bottom: "auto",
+            transform: "none",
             width: "100%", height: "100vh", maxWidth: "none", maxHeight: "none",
             border: "none", borderRadius: "0", boxShadow: "none",
         });
