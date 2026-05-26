@@ -36,6 +36,20 @@ def _nvml_handle(device):
         log.debug("aimdo-viz: pynvml init failed: %s", e)
     return _nvml_state["handle"]
 
+def _nvml_mem_info(device):
+    # On Windows WDDM, cudaMemGetInfo reports per-process memory, hiding other
+    # processes' VRAM. NVML is always device-wide.
+    h = _nvml_handle(device)
+    if h is None:
+        return None
+    try:
+        import pynvml
+        info = pynvml.nvmlDeviceGetMemoryInfo(h)
+        return info.free, info.total
+    except Exception as e:
+        log.debug("aimdo-viz: nvmlDeviceGetMemoryInfo failed: %s", e)
+        return None
+
 def _nvml_power_limit(device):
     if _nvml_state["power_limit"] is not None:
         return _nvml_state["power_limit"]
@@ -200,8 +214,13 @@ async def aimdo_vram_status(request):
     has_dynamic = any(m.get("dynamic") for m in models)
     aimdo_usage = comfy_aimdo.control.get_total_vram_usage() if aimdo_active and has_dynamic else 0
 
-    # driver-level free/total (matches nvitop)
-    free_cuda, total_vram = torch.cuda.mem_get_info(device)
+    # prefer NVML (device-wide on every driver model) and fall back to cudaMemGetInfo
+    # — the latter under-reports on Windows WDDM by hiding other processes' VRAM.
+    _mem = _nvml_mem_info(device)
+    if _mem is not None:
+        free_cuda, total_vram = _mem
+    else:
+        free_cuda, total_vram = torch.cuda.mem_get_info(device)
 
     try:
         gpu_util = torch.cuda.utilization(device)
