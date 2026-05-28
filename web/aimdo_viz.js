@@ -1885,9 +1885,10 @@ function ensureStructure(body) {
     body.appendChild(graphHeader);
 
     const graphCanvas = document.createElement("canvas");
+    graphCanvas.className = "aimdo-graph-canvas";
     graphCanvas.width = 300;
     graphCanvas.height = graphHeight;
-    graphCanvas.style.cssText = `width:100%;height:${graphHeight}px;border-radius:3px;background:var(--aimdo-graphBg);flex-shrink:0;cursor:crosshair;`;
+    graphCanvas.style.cssText = `width:100%;height:${graphHeight}px;border-radius:3px;background:var(--aimdo-graphBg);flex-shrink:0;`;
     body.appendChild(graphCanvas);
 
     const redrawGraph = () => {
@@ -1941,6 +1942,7 @@ function ensureStructure(body) {
     graphCanvas.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
+        e.stopPropagation();
         const visualScale = (body._panel && body._panel._scale) || 1;
         scrubDrag = { startX: e.clientX, startOffset: history.viewOffset, scale: visualScale };
         history.followLive = false;
@@ -1958,7 +1960,7 @@ function ensureStructure(body) {
     document.addEventListener("mouseup", () => {
         if (!scrubDrag) return;
         scrubDrag = null;
-        graphCanvas.style.cursor = "grab";
+        graphCanvas.style.cursor = "";  // restore to CSS-default crosshair
         if (history.viewOffset <= 1) {
             history.viewOffset = 0;
             history.followLive = true;

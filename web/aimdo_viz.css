@@ -563,6 +563,8 @@
     color: var(--aimdo-btnText);
 }
 
+.aimdo-graph-canvas { cursor: crosshair; }
+
 /* graph-height resize bar — highlights on hover and stays lit while dragging */
 .aimdo-graph-resize {
     height: 4px; cursor: ns-resize;
