@@ -46,7 +46,7 @@ let miniShowUnits = true;
 let miniShowType = true;
 let miniShowGpuTemp = true;
 let miniShowGpuPower = true;
-let miniShowSeparators = false;
+let miniShowSeparators = true;
 let graphHeight = 80;
 let currentTheme = "default";
 
@@ -690,7 +690,6 @@ function createPanel() {
     const dragHandle = document.createElement("span");
     dragHandle.className = "aimdo-drag-handle";
     dragHandle.title = "Drag to move (or to dock at the top)";
-    dragHandle.innerHTML = "<span></span>".repeat(6);
     header.appendChild(dragHandle);
     const titleSpan = document.createElement("span");
     titleSpan.className = "aimdo-title";
@@ -2399,6 +2398,7 @@ function renderData(body, data) {
         : [];
     if (visibleDisks.length > 0) {
         m.diskSpaceSection.style.display = "";
+        m.diskSpaceSection.classList.toggle("no-units", !_u);
         const rows = m.diskSpaceRows;
         while (rows.children.length < visibleDisks.length) {
             const row = document.createElement("div");
@@ -2423,9 +2423,10 @@ function renderData(body, data) {
             // colour warms as the drive fills — same scale as gpuUtilColor (10/80 thresholds
             // are util-shaped; for free space "low → warmer" maps better at 75/90).
             fillEl.style.background = pct >= 90 ? C.gpuUtilHi : (pct >= 75 ? C.gpuUtil : C.pinned);
-            usageEl.textContent = miniShowNumbers
-                ? (free != null && total ? formatBytes(free) + " free" : "?")
-                : "";
+            usageEl.textContent = !_n ? "" :
+                (free == null || !total) ? "?" :
+                _u ? formatBytes(free)
+                   : asPct(used, total);
         }
         m.diskSpaceSection.title = buildDiskTooltip(allDisksCache);
         m.diskSpaceLabel.style.display = miniShowType ? "" : "none";

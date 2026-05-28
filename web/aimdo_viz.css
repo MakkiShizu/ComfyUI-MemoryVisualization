@@ -252,33 +252,38 @@
     white-space: nowrap;
 }
 /* 2x3 circular-dot drag handle — matches the grip icon on ComfyUI's docked actionbar.
-   Only shown when docked; floating mode lets the entire header act as the drag surface. */
+   Only shown when docked; floating mode lets the entire header act as the drag surface.
+   The shape is an SVG mask painted by background-color: border-radius can't anti-alias
+   a 2px circle reliably, and a radial-gradient ends up chunkier than what Chrome draws
+   for true SVG primitives. SVG renders the same crisp dots in both browsers. */
 .aimdo-drag-handle {
     display: none;
-    grid-template-columns: 2px 2px;
-    grid-template-rows: 2px 2px 2px;
-    gap: 2px;
+    box-sizing: content-box;
+    width: 6px;
+    height: 10px;
     padding: 0 4px;
+    background-color: var(--aimdo-textDim);
+    -webkit-mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 10'><circle cx='1' cy='1' r='0.8'/><circle cx='5' cy='1' r='0.8'/><circle cx='1' cy='5' r='0.8'/><circle cx='5' cy='5' r='0.8'/><circle cx='1' cy='9' r='0.8'/><circle cx='5' cy='9' r='0.8'/></svg>");
+    mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 10'><circle cx='1' cy='1' r='0.8'/><circle cx='5' cy='1' r='0.8'/><circle cx='1' cy='5' r='0.8'/><circle cx='5' cy='5' r='0.8'/><circle cx='1' cy='9' r='0.8'/><circle cx='5' cy='9' r='0.8'/></svg>");
+    -webkit-mask-size: 6px 10px;
+    mask-size: 6px 10px;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-origin: content-box;
+    mask-origin: content-box;
     cursor: grab;
     touch-action: none;
     flex-shrink: 0;
-    align-content: center;
+    align-self: center;
 }
 #aimdo-viz-panel.aimdo-docked .aimdo-drag-handle {
-    display: inline-grid;
-    grid-template-columns: 2px 2px;
-    grid-template-rows: 2px 2px 2px;
-    gap: 3px;
+    display: inline-block;
     padding: 0 8px;
 }
-.aimdo-drag-handle > span {
-    width: 2px;
-    height: 2px;
-    background: var(--aimdo-textDim);
-    border-radius: 50%;
-}
 .aimdo-drag-handle:active { cursor: grabbing; }
-.aimdo-drag-handle:hover > span { background: var(--aimdo-text); }
+.aimdo-drag-handle:hover { background-color: var(--aimdo-text); }
 .aimdo-header-right {
     display: flex; align-items: center; gap: 6px;
     margin-left: auto;
@@ -439,7 +444,10 @@
 .mini-diskspace-drive-row > .mini-diskspace-usage {
     flex-shrink: 0;
     text-align: right;
-    min-width: 48px;
+    min-width: 32px;
+}
+.mini-diskspace-section.no-units .mini-diskspace-drive-row > .mini-diskspace-usage {
+    min-width: 18px;
 }
 
 /* docked mini-bar: horizontal, fixed-width sections */
