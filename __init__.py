@@ -101,6 +101,42 @@ def _get_cpu_name():
         log.debug("aimdo-viz: cpu name lookup failed: %s", e)
     return _cpu_name_cache["name"]
 
+# Fixed drives + volume labels are static for the session — enumerate once and cache.
+# Sleepy/external drives could make GetVolumeInformationW block, so do it lazily off
+# the polling path (first time a client asks for the list).
+_disks_cache = {"tried": False, "list": []}
+
+def _get_volume_label(mountpoint):
+    try:
+        import platform
+        if platform.system() != "Windows":
+            return None
+        import ctypes
+        buf = ctypes.create_unicode_buffer(256)
+        fs = ctypes.create_unicode_buffer(256)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(mountpoint), buf, 256, None, None, None, fs, 256)
+        if ok:
+            return buf.value or None
+    except Exception as e:
+        log.debug("aimdo-viz: GetVolumeInformationW failed for %s: %s", mountpoint, e)
+    return None
+
+def _get_disk_partitions():
+    if _disks_cache["tried"]:
+        return _disks_cache["list"]
+    _disks_cache["tried"] = True
+    try:
+        # all=False filters CD-ROM, removable, and network on Windows
+        parts = []
+        for p in psutil.disk_partitions(all=False):
+            parts.append({"mountpoint": p.mountpoint, "label": _get_volume_label(p.mountpoint)})
+        _disks_cache["list"] = parts
+    except Exception as e:
+        log.debug("aimdo-viz: disk_partitions failed: %s", e)
+    return _disks_cache["list"]
+
+
 def _detect_model_type(model_obj):
     """Classify a loaded model into a ComfyUI slot type so the UI can color it
     consistently with node connection colors. Returns None when nothing matches
@@ -276,6 +312,21 @@ async def aimdo_vram_status(request):
                 disk_read, disk_write = d.read_bytes, d.write_bytes
         except Exception:
             pass
+
+    # client opts in by sending list_disks=1; backend skips entirely when absent.
+    disks_list = None
+    if request.query.get("list_disks") == "1":
+        disks_list = []
+        for p in _get_disk_partitions():
+            entry = {"mountpoint": p["mountpoint"], "label": p["label"], "total": None, "free": None}
+            try:
+                du = psutil.disk_usage(p["mountpoint"])
+                entry["total"] = du.total
+                entry["free"] = du.free
+            except Exception as e:
+                log.debug("aimdo-viz: disk_usage(%s) failed: %s", p["mountpoint"], e)
+            disks_list.append(entry)
+
     total_pinned = sum(m.get("pinned_ram", 0) for m in models)
     total_loaded_ram = sum(m.get("loaded_ram", 0) for m in models)
 
@@ -301,6 +352,7 @@ async def aimdo_vram_status(request):
         "process_swap": process_swap,
         "disk_read": disk_read,
         "disk_write": disk_write,
+        "disks": disks_list,
         "process_ram": process_ram,
         "pinned_ram": total_pinned,
         "loaded_ram": total_loaded_ram,

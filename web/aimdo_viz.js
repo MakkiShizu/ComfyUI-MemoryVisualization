@@ -1,19 +1,19 @@
-import { app } from "../../scripts/app.js";
+﻿import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import {
+    GRAPH_POINTS, HISTORY_TICK_MS,
+    history, graphHover, graphState,
+    pushHistory, pushExecEvent, historyGet, smoothGpuUtil,
+    loadHistory, saveHistory, clearHistoryStorage,
+    loadGraphSavedState, resetHistoryState,
+    drawGraph, buildGraphSubmenu, initGraph,
+} from "./graph.js";
 
 let pollInterval = 500;
 const FADE_TICKS = 6;
-const GRAPH_POINTS = 120;        // visible window size (data points drawn on the canvas at once)
-const HISTORY_BUFFER = 1200;     // total points retained for scrollback (~20 min at 1s history tick)
-const HISTORY_TICK_MS = 1000;    // history snapshots fire at most this often regardless of poll rate
 
 const execState = { running: false, node: null, progress: null };
 let peakVramUsed = 0;
-let gpuLineVisible = true;
-let graphStyle = "area";          // "area" | "dots" | "ticker" | "bars"
-let graphVramColor = null;        // null = use theme C.vram; otherwise hex override
-let graphTotalColor = null;       // null = use theme C.totalLine; otherwise hex override
-let graphTotalSmoothness = 0;     // 0 = raw, larger = wider moving-average window radius
 let modelCollapsed = {};
 let colorModelBars = false;
 let colorModelStroke = true;
@@ -31,6 +31,13 @@ const diskState = {
     prevRead: null, prevWrite: null, prevTime: 0,
     peakRead: DISK_PEAK_FLOOR, peakWrite: DISK_PEAK_FLOOR,
 };
+// Free-disk-space monitor — array of selected mountpoints (e.g. ["C:\\","D:\\"]).
+// allDisksCache holds the most recent full enumeration so the tooltip can list
+// every fixed drive even when only some are pinned to the bar.
+let selectedDisks = [];
+let allDisksCache = [];
+let wantDisksList = false;  // one-shot — set when settings menu wants a fresh drive list
+let _rebuildDriveMenu = null;  // assigned by createPanel; called from renderData when allDisksCache refreshes
 let showHwNames = true;
 let showTitle = true;
 let showExecBtn = false;  // optional play / cancel-running button in the header
@@ -39,6 +46,7 @@ let miniShowUnits = true;
 let miniShowType = true;
 let miniShowGpuTemp = true;
 let miniShowGpuPower = true;
+let miniShowSeparators = false;
 let graphHeight = 80;
 let currentTheme = "default";
 
@@ -160,6 +168,8 @@ function lightenRgb([r, g, b], amount) {
     ];
 }
 
+initGraph({ C, hexToRgb, hexToRgba, saveState });
+
 
 function escHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -220,507 +230,25 @@ function formatBytes(bytes, withUnit = true) {
     return (bytes / 1024).toFixed(0) + (withUnit ? " KB" : "");
 }
 
-// rolling history — ring buffer for ~20 min of data at 1s history tick; the visible window of
-// GRAPH_POINTS slides along this buffer based on viewOffset (0 = following live).
-const history = {
-    torch_active: new Float64Array(HISTORY_BUFFER),
-    aimdo_usage: new Float64Array(HISTORY_BUFFER),
-    free_vram: new Float64Array(HISTORY_BUFFER),
-    gpu_util: new Float64Array(HISTORY_BUFFER),
-    times: new Float64Array(HISTORY_BUFFER),    // ms timestamps; absolute so pollInterval changes don't distort
-    total_vram: 1,
-    head: 0,
-    len: 0,
-    pushCount: 0,       // monotonically increasing total pushes; used as absolute sample id
-    viewOffset: 0,      // points back from newest; 0 = right edge (live)
-    followLive: true,
-    execEvents: [],     // {type: "start"|"end", time: ms} — drawn as vertical marks
-};
-const EXEC_EVENTS_MAX = 200;
-const EXEC_NOOP_MS = 1500;  // start→end shorter than this is treated as a queue-with-no-changes; both events dropped
-function pushExecEvent(type) {
-    if (type === "end" && history.execEvents.length > 0) {
-        const last = history.execEvents[history.execEvents.length - 1];
-        if (last.type === "start" && Date.now() - last.time < EXEC_NOOP_MS) {
-            history.execEvents.pop();
-            return;
-        }
-    }
-    history.execEvents.push({ type, time: Date.now() });
-    if (history.execEvents.length > EXEC_EVENTS_MAX) {
-        history.execEvents.splice(0, history.execEvents.length - EXEC_EVENTS_MAX);
-    }
+
+// "C:\" → "C:", "/" stays "/". Avoids stripping a bare root slash on POSIX.
+function shortMountpoint(mp) {
+    if (!mp) return "";
+    if (mp.length > 1) return mp.replace(/[\\\/]+$/, "");
+    return mp;
 }
 
-// NVML util frequently dips to 0 mid-workload; peak-hold preserves real peaks.
-const GPU_SMOOTH_WINDOW = 3;
-const gpuRawBuf = [];
-function smoothGpuUtil(raw) {
-    if (raw == null) {
-        gpuRawBuf.length = 0;
-        return null;
-    }
-    gpuRawBuf.push(raw);
-    if (gpuRawBuf.length > GPU_SMOOTH_WINDOW) gpuRawBuf.shift();
-    let m = 0;
-    for (const v of gpuRawBuf) if (v > m) m = v;
-    return m;
+function buildDiskTooltip(disks) {
+    if (!disks || !disks.length) return "";
+    return disks.map(d => {
+        const mp = shortMountpoint(d.mountpoint);
+        const label = d.label ? ` "${d.label}"` : "";
+        if (d.total == null || d.free == null) return `${mp}${label}: unavailable`;
+        const used = d.total - d.free;
+        const pct = Math.round(used / d.total * 100);
+        return `${mp}${label}: ${formatBytes(used)} / ${formatBytes(d.total)} (${pct}% used, ${formatBytes(d.free)} free)`;
+    }).join("\n");
 }
-
-function pushHistory(data) {
-    history.total_vram = data.total_vram;
-    const i = history.head;
-    // store non-overlapping values matching the bar logic
-    if (data.aimdo_usage > 0) {
-        history.aimdo_usage[i] = data.aimdo_usage;
-        history.torch_active[i] = 0;
-    } else {
-        history.aimdo_usage[i] = 0;
-        history.torch_active[i] = data.torch_active;
-    }
-    history.free_vram[i] = data.free_vram;
-    history.gpu_util[i] = data.gpu_util != null ? data.gpu_util : 0;
-    history.times[i] = Date.now();
-    history.head = (i + 1) % HISTORY_BUFFER;
-    if (history.len < HISTORY_BUFFER) history.len++;
-    history.pushCount++;
-    // when scrolled back, advance viewOffset so the user's pinned window keeps
-    // showing the same chronological data instead of sliding with new points.
-    if (!history.followLive) {
-        const maxOffset = Math.max(0, history.len - GRAPH_POINTS);
-        history.viewOffset = Math.min(maxOffset, history.viewOffset + 1);
-    }
-}
-
-function historyGet(arr, idx) {
-    // idx 0 = oldest valid, idx len-1 = newest
-    return arr[(history.head - history.len + idx + HISTORY_BUFFER) % HISTORY_BUFFER];
-}
-
-// history persistence — IndexedDB
-// Origin-scoped like so all ComfyUI tabs on this port share the DB.
-const HISTORY_DB_NAME = "aimdo_viz";
-const HISTORY_DB_VERSION = 1;
-const HISTORY_STORE = "kv";
-const HISTORY_KEY = "history";
-const HISTORY_SCHEMA = 1;  // bump when the stored record shape changes incompatibly
-
-// cleanup the localStorage key for users upgrading from the previous version.
-try { localStorage.removeItem("aimdo_viz_history"); } catch {}
-
-let _dbPromise = null;
-function openHistoryDb() {
-    if (_dbPromise) return _dbPromise;
-    _dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(HISTORY_DB_NAME, HISTORY_DB_VERSION);
-        req.onupgradeneeded = () => req.result.createObjectStore(HISTORY_STORE);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-    });
-    _dbPromise.catch(() => { _dbPromise = null; });  // allow retry after open failure
-    return _dbPromise;
-}
-
-async function saveHistory() {
-    // skip writes when there's nothing to persist; resetHistory uses its own
-    // delete path so we never need to encode "empty" as a stored record.
-    if (history.len === 0) return;
-    try {
-        const db = await openHistoryDb();
-        // structured clone snapshots the Float64Arrays at put() time, so subsequent
-        // mutations to history.* don't affect the pending write. head/len recover
-        // ring position on load — no reorder pass needed.
-        db.transaction(HISTORY_STORE, "readwrite").objectStore(HISTORY_STORE).put({
-            v: HISTORY_SCHEMA,
-            head: history.head,
-            len: history.len,
-            buffer_size: HISTORY_BUFFER,
-            total_vram: history.total_vram,
-            times: history.times,
-            torch_active: history.torch_active,
-            aimdo_usage: history.aimdo_usage,
-            free_vram: history.free_vram,
-            gpu_util: history.gpu_util,
-            execEvents: history.execEvents,
-        }, HISTORY_KEY);
-    } catch (err) {
-        // log once per session — saveHistory runs every 10s, so a persistent failure
-        // (private-browsing IDB disabled, quota exceeded) would otherwise spam the console.
-        if (!saveHistory._warned) {
-            saveHistory._warned = true;
-            console.warn("aimdo-viz: history save failed", err);
-        }
-    }
-}
-
-async function clearHistoryStorage() {
-    // inline path used by resetHistory so the intent ("delete") is captured at the
-    // call site — avoids racing the poll loop that could re-populate history.len
-    // before an async saveHistory() got around to checking it.
-    try {
-        const db = await openHistoryDb();
-        db.transaction(HISTORY_STORE, "readwrite").objectStore(HISTORY_STORE).delete(HISTORY_KEY);
-    } catch (err) { console.warn("aimdo-viz: history clear failed", err); }
-}
-
-async function loadHistory() {
-    try {
-        const db = await openHistoryDb();
-        const data = await new Promise((resolve, reject) => {
-            const req = db.transaction(HISTORY_STORE, "readonly").objectStore(HISTORY_STORE).get(HISTORY_KEY);
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-        if (!data || data.v !== HISTORY_SCHEMA || typeof data.len !== "number") return;
-        // if HISTORY_BUFFER changed since the save, the ring head/positions wouldn't
-        // align with the current buffer size — drop the saved data and start fresh
-        // rather than display a corrupted/zero-filled graph.
-        if (!data.times || data.times.length !== HISTORY_BUFFER) return;
-        // copy via .set() rather than reassigning so external references to the
-        // history.* Float64Arrays stay valid.
-        const copy = (target, source) => { if (source) target.set(source); };
-        history.total_vram = data.total_vram || 1;
-        copy(history.times, data.times);
-        copy(history.torch_active, data.torch_active);
-        copy(history.aimdo_usage, data.aimdo_usage);
-        copy(history.free_vram, data.free_vram);
-        copy(history.gpu_util, data.gpu_util);
-        history.len = Math.min(data.len, HISTORY_BUFFER);
-        history.head = (typeof data.head === "number" ? data.head : history.len) % HISTORY_BUFFER;
-        history.pushCount = history.len;  // restored buffer starts the pushCount epoch at len
-        if (Array.isArray(data.execEvents)) history.execEvents = data.execEvents.slice(-EXEC_EVENTS_MAX);
-    } catch (err) { console.warn("aimdo-viz: history load failed", err); }
-}
-
-function drawGraph(ctx, w, h) {
-    const total = history.total_vram;
-    const len = history.len;
-    if (len < 2) return;
-
-    // windowed slice: render `visible` points starting at chronological index `startIdx`.
-    const visible = Math.min(GRAPH_POINTS, len - history.viewOffset);
-    if (visible < 2) return;
-    const startIdx = len - visible - history.viewOffset;
-
-    ctx.clearRect(0, 0, w, h);
-
-    ctx.strokeStyle = C.gridLine;
-    ctx.lineWidth = 1;
-    for (const pct of [0.25, 0.5, 0.75]) {
-        const y = Math.round(h - h * pct) + 0.5;
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-        ctx.stroke();
-    }
-
-    const stepX = w / (GRAPH_POINTS - 1);
-    const yFor = val => h - (val / total) * h;
-    // right-align partial windows so new data flows in from the right
-    const dataStartX = (GRAPH_POINTS - visible) * stepX;
-    const xFor = i => (GRAPH_POINTS - visible + i) * stepX;
-    const at = (arr, i) => historyGet(arr, startIdx + i);
-
-    // smoothed total-used values, precomputed once per frame and shared by the total
-    // line, dots, and area-"other" layer so dots/areas stay at-or-below the line.
-    const smoothN = graphTotalSmoothness;
-    const totalValues = new Float64Array(visible);
-    for (let i = 0; i < visible; i++) totalValues[i] = total - at(history.free_vram, i);
-    let smoothedValues;
-    if (smoothN > 0 && visible > 0) {
-        smoothedValues = new Float64Array(visible);
-        // sliding window sum — each step adds the entering sample and drops the leaving one.
-        let sum = 0, count = 0;
-        const initEnd = Math.min(visible - 1, smoothN);
-        for (let k = 0; k <= initEnd; k++) { sum += totalValues[k]; count++; }
-        smoothedValues[0] = sum / count;
-        for (let i = 1; i < visible; i++) {
-            const add = i + smoothN;
-            const drop = i - smoothN - 1;
-            if (add < visible) { sum += totalValues[add]; count++; }
-            if (drop >= 0) { sum -= totalValues[drop]; count--; }
-            smoothedValues[i] = sum / count;
-        }
-    } else {
-        smoothedValues = totalValues;
-    }
-    const valueAt = (i) => smoothedValues[i];
-
-    const vramHex = graphVramColor || C.vram;
-    if (graphStyle === "area") {
-        // aimdo area
-        ctx.beginPath();
-        ctx.moveTo(dataStartX, h);
-        for (let i = 0; i < visible; i++) {
-            ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i)));
-        }
-        ctx.lineTo(xFor(visible - 1), h);
-        ctx.closePath();
-        ctx.fillStyle = hexToRgba(vramHex, 0.35);
-        ctx.fill();
-
-        // torch area stacked on top of aimdo
-        ctx.beginPath();
-        ctx.moveTo(dataStartX, yFor(at(history.aimdo_usage, 0)));
-        for (let i = 0; i < visible; i++) {
-            ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i) + at(history.torch_active, i)));
-        }
-        for (let i = visible - 1; i >= 0; i--) {
-            ctx.lineTo(xFor(i), yFor(at(history.aimdo_usage, i)));
-        }
-        ctx.closePath();
-        ctx.fillStyle = hexToRgba(C.torch, 0.4);
-        ctx.fill();
-
-        // "other" area filling the gap between (aimdo + torch) and the (possibly smoothed)
-        // total line. Capped at the smoothed total so the fill never pokes above it.
-        const stackTop = (i) => at(history.aimdo_usage, i) + at(history.torch_active, i);
-        const topFor = (i) => Math.max(stackTop(i), valueAt(i));  // never below the stack
-        ctx.beginPath();
-        ctx.moveTo(dataStartX, yFor(stackTop(0)));
-        for (let i = 0; i < visible; i++) {
-            ctx.lineTo(xFor(i), yFor(topFor(i)));
-        }
-        for (let i = visible - 1; i >= 0; i--) {
-            ctx.lineTo(xFor(i), yFor(stackTop(i)));
-        }
-        ctx.closePath();
-        ctx.fillStyle = hexToRgba(C.other, 0.4);
-        ctx.fill();
-    } else if (graphStyle === "bars") {
-        // aggregate 3 samples per bar so each bar is thick with a visible gap between.
-        const groupSize = 3;
-        const barStep = stepX * groupSize;
-        const barW = Math.max(4, barStep - 4);
-        ctx.fillStyle = hexToRgba(vramHex, 0.55);
-        const newestAbs = history.pushCount - 1 - history.viewOffset;
-        const oldestAbs = newestAbs - visible + 1;
-        const firstGroupAbs = Math.floor(oldestAbs / groupSize) * groupSize;
-        const lastGroupAbs = Math.floor(newestAbs / groupSize) * groupSize;
-        for (let absG = firstGroupAbs; absG <= lastGroupAbs; absG += groupSize) {
-            const sStart = Math.max(absG, oldestAbs);
-            const sEnd = Math.min(absG + groupSize - 1, newestAbs);
-            let peak = 0;
-            for (let a = sStart; a <= sEnd; a++) {
-                const v = total - at(history.free_vram, a - oldestAbs);
-                if (v > peak) peak = v;
-            }
-            const centerRel = (absG - oldestAbs) + (groupSize - 1) / 2;
-            const cx = xFor(centerRel);
-            const y = yFor(peak);
-            // no integer rounding — keep gap width visually consistent via anti-aliasing
-            ctx.fillRect(cx - barW / 2, y, barW, h - y);
-        }
-    } else if (graphStyle === "ticker") {
-        // candle = aggregate of N samples, keyed off the monotonic pushCount so the
-        // same samples always land in the same candle even as the ring buffer rolls.
-        // The rightmost candle may be a partial — it builds up until the group completes.
-        const groupSize = 3;
-        const candleStep = stepX * groupSize;
-        const barW = Math.max(5, candleStep - 3);
-        const up = "#10b981";
-        const down = "#ef4444";
-        // absolute push id of the oldest and newest visible samples
-        const newestAbs = history.pushCount - 1 - history.viewOffset;
-        const oldestAbs = newestAbs - visible + 1;
-        const firstGroupAbs = Math.floor(oldestAbs / groupSize) * groupSize;
-        const lastGroupAbs = Math.floor(newestAbs / groupSize) * groupSize;
-        ctx.lineWidth = 1;
-        for (let absG = firstGroupAbs; absG <= lastGroupAbs; absG += groupSize) {
-            const sStart = Math.max(absG, oldestAbs);
-            const sEnd = Math.min(absG + groupSize - 1, newestAbs);
-            const oRel = sStart - oldestAbs;
-            const cRel = sEnd - oldestAbs;
-            const o = total - at(history.free_vram, oRel);
-            const c = total - at(history.free_vram, cRel);
-            // hi/lo over group + 1 sample on each side so wicks pick up nearby variance.
-            // Monotonic 3-sample groups otherwise give hi=max(o,c)/lo=min(o,c) → no wicks.
-            const hiLoStartRel = Math.max(0, oRel - 1);
-            const hiLoEndRel = Math.min(visible - 1, cRel + 1);
-            let hi = o, lo = o;
-            for (let rel = hiLoStartRel; rel <= hiLoEndRel; rel++) {
-                const v = total - at(history.free_vram, rel);
-                if (v > hi) hi = v;
-                if (v < lo) lo = v;
-            }
-            const yO = yFor(o), yC = yFor(c);
-            const yTop = Math.min(yO, yC);
-            const bodyH = Math.max(1, Math.abs(yC - yO));
-            // center the candle on its full would-be group span, even when clipped
-            const centerRel = (absG - oldestAbs) + (groupSize - 1) / 2;
-            const cx = xFor(centerRel);
-            const isUp = c >= o;
-            const color = isUp ? up : down;
-            const yBot = yTop + bodyH;
-            // wicks: draw only the segments that extend past the body, so the hollow
-            // up-candle stays empty inside.
-            ctx.strokeStyle = color;
-            const wickX = Math.round(cx) + 0.5;
-            const yHi = yFor(hi);
-            const yLo = yFor(lo);
-            if (yHi < yTop) {
-                ctx.beginPath();
-                ctx.moveTo(wickX, yHi);
-                ctx.lineTo(wickX, yTop);
-                ctx.stroke();
-            }
-            if (yLo > yBot) {
-                ctx.beginPath();
-                ctx.moveTo(wickX, yBot);
-                ctx.lineTo(wickX, yLo);
-                ctx.stroke();
-            }
-            const bx = Math.round(cx - barW / 2);
-            if (isUp) {
-                ctx.strokeRect(bx + 0.5, Math.round(yTop) + 0.5, barW - 1, bodyH);
-            } else {
-                ctx.fillStyle = color;
-                ctx.fillRect(bx, Math.round(yTop), barW, bodyH);
-            }
-        }
-    } else if (graphStyle === "dots") {
-        // uniform grid: row positions are fixed; visibility depends on whether the
-        // (smoothed) value covers the row, opacity fades toward the bottom of the canvas.
-        // Batched per-row so each fill style is applied once across all visible columns.
-        const dotR = 1;
-        const dotStep = 8;
-        const colStep = 2;
-        const [r, g, b] = hexToRgb(vramHex);
-        // precompute row tops so we can skip clipped rows quickly per column
-        for (let y = 0; y < h; y += dotStep) {
-            const f = 1 - y / h;
-            ctx.fillStyle = `rgba(${r},${g},${b},${(0.15 + 0.65 * f).toFixed(3)})`;
-            ctx.beginPath();
-            for (let i = 0; i < visible; i += colStep) {
-                if (y < yFor(valueAt(i))) continue;
-                const x = xFor(i);
-                ctx.moveTo(x + dotR, y);
-                ctx.arc(x, y, dotR, 0, Math.PI * 2);
-            }
-            ctx.fill();
-        }
-    }
-
-    // total used line — ticker already encodes the value in each candle's edge,
-    // so skip the line to avoid overlapping the bars.
-    if (graphStyle !== "ticker") {
-        ctx.beginPath();
-        ctx.strokeStyle = graphTotalColor || C.totalLine;
-        ctx.lineWidth = 1.5;
-        ctx.lineJoin = "round";
-        ctx.lineCap = "round";
-        if (smoothN > 0 && visible >= 3) {
-            // quadratic-bezier through midpoints — each original sample acts as a
-            // control point so the curve passes near every point but rounds sharp
-            // corners. Stronger smoothing slider → already-flatter values, so the
-            // curve also gets visually softer.
-            const xs = new Float64Array(visible);
-            const ys = new Float64Array(visible);
-            for (let i = 0; i < visible; i++) { xs[i] = xFor(i); ys[i] = yFor(valueAt(i)); }
-            ctx.moveTo(xs[0], ys[0]);
-            for (let i = 1; i < visible - 1; i++) {
-                const mx = (xs[i] + xs[i + 1]) / 2;
-                const my = (ys[i] + ys[i + 1]) / 2;
-                ctx.quadraticCurveTo(xs[i], ys[i], mx, my);
-            }
-            ctx.lineTo(xs[visible - 1], ys[visible - 1]);
-        } else {
-            for (let i = 0; i < visible; i++) {
-                const x = xFor(i);
-                const y = yFor(valueAt(i));
-                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-            }
-        }
-        ctx.stroke();
-    }
-
-    // capacity line
-    ctx.strokeStyle = C.capLine;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(0, yFor(total));
-    ctx.lineTo(w, yFor(total));
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // exec start/end markers — positioned by interpolating each event's time into the
-    // visible sample times array, so markers stay glued to the data during scrubbing
-    // even if pollInterval drifts between ticks.
-    if (history.execEvents.length) {
-        // cache the visible window's sample times once
-        const sampleTimes = new Float64Array(visible);
-        for (let i = 0; i < visible; i++) sampleTimes[i] = historyGet(history.times, startIdx + i);
-        const tFirst = sampleTimes[0];
-        const tLast = sampleTimes[visible - 1];
-        ctx.lineWidth = 1;
-        ctx.setLineDash([2, 3]);
-        for (const evt of history.execEvents) {
-            if (evt.time < tFirst || evt.time > tLast) continue;
-            // binary search for the sample whose time is just <= evt.time
-            let lo = 0, hi = visible - 1;
-            while (lo < hi) {
-                const mid = (lo + hi + 1) >> 1;
-                if (sampleTimes[mid] <= evt.time) lo = mid; else hi = mid - 1;
-            }
-            const tA = sampleTimes[lo];
-            const tB = lo < visible - 1 ? sampleTimes[lo + 1] : tA;
-            const frac = tB > tA ? (evt.time - tA) / (tB - tA) : 0;
-            const x = xFor(lo + frac);
-            ctx.strokeStyle = evt.type === "start" ? C.torch : C.gpuUtilHi;
-            ctx.beginPath();
-            ctx.moveTo(x + 0.5, 0);
-            ctx.lineTo(x + 0.5, h);
-            ctx.stroke();
-        }
-        ctx.setLineDash([]);
-    }
-
-    // gpu line uses its own 0..100 scale, not the VRAM byte scale
-    if (gpuLineVisible) {
-        ctx.beginPath();
-        ctx.strokeStyle = C.gpuUtil;
-        ctx.lineWidth = 1.25;
-        for (let i = 0; i < visible; i++) {
-            const y = h - (at(history.gpu_util, i) / 100) * h;
-            if (i === 0) ctx.moveTo(xFor(i), y); else ctx.lineTo(xFor(i), y);
-        }
-        ctx.stroke();
-    }
-
-    if (graphHover.x != null && graphHover.idx != null) {
-        const hi = graphHover.idx - startIdx;
-        if (hi >= 0 && hi < visible) {
-            ctx.strokeStyle = C.vram;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(graphHover.x + 0.5, 0);
-            ctx.lineTo(graphHover.x + 0.5, h);
-            ctx.stroke();
-
-            // dots on the lines crossed by the hover line. Stroke around each dot
-            // in the graph bg so it pops off the colored area fills behind it.
-            const dot = (x, y, fill) => {
-                ctx.beginPath();
-                ctx.arc(x, y, 3, 0, Math.PI * 2);
-                ctx.fillStyle = fill;
-                ctx.fill();
-                ctx.lineWidth = 1.5;
-                ctx.strokeStyle = C.graphBg;
-                ctx.stroke();
-            };
-            const totalY = yFor(total - at(history.free_vram, hi));
-            dot(graphHover.x, totalY, C.totalLine);
-            if (gpuLineVisible) {
-                const gpuY = h - (at(history.gpu_util, hi) / 100) * h;
-                dot(graphHover.x, gpuY, C.gpuUtil);
-            }
-        }
-    }
-}
-
-// hover-line state for the graph; null when cursor is outside the data range.
-const graphHover = { x: null, idx: null };
 
 // per-model residency diff state
 const modelState = {};
@@ -808,11 +336,7 @@ function drawPageGrid(ctx, cssW, residency, changeAge, panelScale, vramColor) {
 function createPanel() {
     const saved = loadState();
     if (saved.pollInterval) pollInterval = saved.pollInterval;
-    if (typeof saved.gpuLineVisible === "boolean") gpuLineVisible = saved.gpuLineVisible;
-    if (typeof saved.graphStyle === "string") graphStyle = saved.graphStyle;
-    if (typeof saved.graphVramColor === "string") graphVramColor = saved.graphVramColor;
-    if (typeof saved.graphTotalColor === "string") graphTotalColor = saved.graphTotalColor;
-    if (typeof saved.graphTotalSmoothness === "number") graphTotalSmoothness = Math.max(0, Math.min(20, saved.graphTotalSmoothness | 0));
+    loadGraphSavedState(saved);
     if (typeof saved.colorModelBars === "boolean") colorModelBars = saved.colorModelBars;
     if (typeof saved.colorModelStroke === "boolean") colorModelStroke = saved.colorModelStroke;
     if (typeof saved.colorModelName === "boolean") colorModelName = saved.colorModelName;
@@ -823,6 +347,7 @@ function createPanel() {
     if (typeof saved.showCpuInMini === "boolean") showCpuInMini = saved.showCpuInMini;
     if (typeof saved.showPagefileInMini === "boolean") showPagefileInMini = saved.showPagefileInMini;
     if (typeof saved.showDiskInMini === "boolean") showDiskInMini = saved.showDiskInMini;
+    if (Array.isArray(saved.selectedDisks)) selectedDisks = saved.selectedDisks.slice();
     if (typeof saved.showHwNames === "boolean") showHwNames = saved.showHwNames;
     if (typeof saved.showTitle === "boolean") showTitle = saved.showTitle;
     if (typeof saved.showExecBtn === "boolean") showExecBtn = saved.showExecBtn;
@@ -831,6 +356,7 @@ function createPanel() {
     if (typeof saved.miniShowType === "boolean") miniShowType = saved.miniShowType;
     if (typeof saved.miniShowGpuTemp === "boolean") miniShowGpuTemp = saved.miniShowGpuTemp;
     if (typeof saved.miniShowGpuPower === "boolean") miniShowGpuPower = saved.miniShowGpuPower;
+    if (typeof saved.miniShowSeparators === "boolean") miniShowSeparators = saved.miniShowSeparators;
     if (typeof saved.graphHeight === "number" && saved.graphHeight > 0) graphHeight = saved.graphHeight;
     if (typeof saved.theme === "string" && THEME_NAMES.includes(saved.theme)) {
         currentTheme = saved.theme;
@@ -1195,12 +721,6 @@ function createPanel() {
             <div class="aimdo-seg aimdo-seg-other"></div>
         </div>
     </div>
-    <div class="mini-cpu-section">
-        <div class="aimdo-mini-row">
-            <span class="mini-cpu-label">CPU</span><span class="mini-cpu-usage"></span>
-        </div>
-        <div class="aimdo-mini-track mini-cpu-bar"><div class="aimdo-mini-fill mini-cpu-fill"></div></div>
-    </div>
     <div class="mini-pagefile-section">
         <div class="aimdo-mini-row">
             <span class="mini-pagefile-label">Page</span><span class="mini-pagefile-usage"></span>
@@ -1223,6 +743,18 @@ function createPanel() {
             <span class="mini-disk-write-usage"></span>
         </div>
     </div>
+    <div class="mini-diskspace-section is-multibar">
+        <div class="aimdo-mini-row mini-diskspace-row">
+            <span class="mini-diskspace-label">Disk space</span>
+        </div>
+        <div class="mini-diskspace-rows"></div>
+    </div>
+    <div class="mini-cpu-section">
+        <div class="aimdo-mini-row">
+            <span class="mini-cpu-label">CPU</span><span class="mini-cpu-usage"></span>
+        </div>
+        <div class="aimdo-mini-track mini-cpu-bar"><div class="aimdo-mini-fill mini-cpu-fill"></div></div>
+    </div>
     <div class="mini-gpu-section">
         <div class="aimdo-mini-row mini-gpu-row">
             <span class="mini-gpu-label">GPU</span><span class="mini-gpu-header-value"></span>
@@ -1243,6 +775,7 @@ function createPanel() {
 
     // refs cached once so the per-tick render path doesn't re-query
     const mbRefs = {
+        bar: miniBar,
         ramSection: miniBar.querySelector(".mini-ram-section"),
         ramLabel: miniBar.querySelector(".mini-ram-label"),
         ramUsage: miniBar.querySelector(".mini-ram-usage"),
@@ -1265,6 +798,9 @@ function createPanel() {
         diskReadFill: miniBar.querySelector(".mini-disk-read-fill"),
         diskWriteUsage: miniBar.querySelector(".mini-disk-write-usage"),
         diskWriteFill: miniBar.querySelector(".mini-disk-write-fill"),
+        diskSpaceSection: miniBar.querySelector(".mini-diskspace-section"),
+        diskSpaceLabel: miniBar.querySelector(".mini-diskspace-label"),
+        diskSpaceRows: miniBar.querySelector(".mini-diskspace-rows"),
         gpuSection: miniBar.querySelector(".mini-gpu-section"),
         gpuRow: miniBar.querySelector(".mini-gpu-row"),
         gpuLabel: miniBar.querySelector(".mini-gpu-label"),
@@ -1377,18 +913,8 @@ function createPanel() {
 
     function resetHistory() {
         peakVramUsed = 0;
-        history.head = 0;
-        history.len = 0;
-        history.pushCount = 0;
-        history.viewOffset = 0;
-        history.followLive = true;
-        history.torch_active.fill(0);
-        history.aimdo_usage.fill(0);
-        history.free_vram.fill(0);
-        history.gpu_util.fill(0);
-        history.times.fill(0);
-        history.execEvents.length = 0;
-        clearHistoryStorage();  // fire-and-forget delete; intent captured synchronously
+        resetHistoryState();
+        clearHistoryStorage();
     }
 
     const popoutBtn = document.createElement("span");
@@ -1761,7 +1287,8 @@ function createPanel() {
     const dockWidthSubmenu = makeMenu();
     const graphSubmenu = makeMenu();
     const gpuSubmenu = makeMenu();
-    const allSubmenus = [scaleSubmenu, pollSubmenu, displaySubmenu, miniSubmenu, themeSubmenu, dockWidthSubmenu, graphSubmenu, gpuSubmenu];
+    const diskSubmenu = makeMenu();
+    const allSubmenus = [scaleSubmenu, pollSubmenu, displaySubmenu, miniSubmenu, themeSubmenu, dockWidthSubmenu, graphSubmenu, gpuSubmenu, diskSubmenu];
     function closeAllSubmenus() { for (const m of allSubmenus) m.style.display = "none"; }
 
     // submenu overlaps parent by 1px so mouse transit doesn't trigger mouseleave-close.
@@ -1881,7 +1408,7 @@ function createPanel() {
         () => showCpuInMini, v => { showCpuInMini = v; }, "showCpuInMini");
     const showPagefile = makeToggleItem("Pagefile",
         () => showPagefileInMini, v => { showPagefileInMini = v; }, "showPagefileInMini");
-    const showDisk = makeToggleItem("Disk I/O",
+    const showDisk = makeToggleItem("I/O",
         () => showDiskInMini, v => { showDiskInMini = v; }, "showDiskInMini");
     // labeled "util" since these live under the nested GPU submenu now
     const showGpu = makeToggleItem("util",
@@ -1898,11 +1425,12 @@ function createPanel() {
         () => miniShowGpuTemp, v => { miniShowGpuTemp = v; }, "miniShowGpuTemp");
     const showGpuPower = makeToggleItem("power",
         () => miniShowGpuPower, v => { miniShowGpuPower = v; }, "miniShowGpuPower");
+    const showSeparators = makeToggleItem("Separators",
+        () => miniShowSeparators, v => { miniShowSeparators = v; }, "miniShowSeparators");
     miniSubmenu.appendChild(showRam.item);
     miniSubmenu.appendChild(showVram.item);
     miniSubmenu.appendChild(showCpu.item);
     miniSubmenu.appendChild(showPagefile.item);
-    miniSubmenu.appendChild(showDisk.item);
     // GPU's util / temp / power get their own submenu since they're closely related —
     // keeps the Mini-view list flat and groups the three multibar toggles together.
     // Each is independent: any combination can be on/off, including just temp+power.
@@ -1910,18 +1438,75 @@ function createPanel() {
     gpuSubmenu.appendChild(showGpuTemp.item);
     gpuSubmenu.appendChild(showGpuPower.item);
     miniSubmenu.appendChild(makeSubmenuParent("GPU", gpuSubmenu, miniSubmenu, [miniSubmenu]));
-    // when the cursor enters a non-parent item in miniSubmenu, close gpuSubmenu — otherwise
-    // it would linger open while the user is interacting with sibling toggles like RAM/VRAM.
+
+    // --- Disk submenu: I/O toggle + one toggle per detected fixed drive.
+    // Drive items are populated lazily from the next poll once list_disks=1
+    // is requested. Selecting any drive enables the disk-space mini section.
+    diskSubmenu.appendChild(showDisk.item);
+    const drivesHeader = document.createElement("div");
+    drivesHeader.className = "aimdo-menu-header";
+    drivesHeader.textContent = "Drives";
+    diskSubmenu.appendChild(drivesHeader);
+    const drivesPlaceholder = document.createElement("div");
+    drivesPlaceholder.className = "aimdo-menu-item is-disabled";
+    drivesPlaceholder.innerHTML = `<span class="aimdo-check"></span>(detecting…)`;
+    diskSubmenu.appendChild(drivesPlaceholder);
+    const driveItems = new Map();  // mountpoint → menu item element
+    function renderDriveItems() {
+        for (const [mp, item] of driveItems) {
+            const on = selectedDisks.includes(mp);
+            const entry = allDisksCache.find(d => d.mountpoint === mp);
+            // Volume labels are user-supplied (e.g. drive renamed in Explorer),
+            // so escape them before splicing into innerHTML.
+            const lbl = entry && entry.label ? ` ${escHtml(entry.label)}` : "";
+            item.innerHTML = `<span class="aimdo-check">${on ? "✓" : ""}</span>${escHtml(shortMountpoint(mp))}${lbl}`;
+        }
+    }
+    function rebuildDriveMenu() {
+        if (!allDisksCache.length) return;
+        if (drivesPlaceholder.parentNode) drivesPlaceholder.remove();
+        // Remove items for drives no longer present, and add new ones.
+        const present = new Set(allDisksCache.map(d => d.mountpoint));
+        for (const [mp, item] of driveItems) {
+            if (!present.has(mp)) { item.remove(); driveItems.delete(mp); }
+        }
+        for (const d of allDisksCache) {
+            if (driveItems.has(d.mountpoint)) continue;
+            const item = document.createElement("div");
+            item.className = "aimdo-menu-item";
+            item.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const idx = selectedDisks.indexOf(d.mountpoint);
+                if (idx >= 0) selectedDisks.splice(idx, 1);
+                else selectedDisks.push(d.mountpoint);
+                saveState({ selectedDisks });
+                renderDriveItems();
+            });
+            diskSubmenu.appendChild(item);
+            driveItems.set(d.mountpoint, item);
+        }
+        renderDriveItems();
+    }
+    _rebuildDriveMenu = rebuildDriveMenu;
+    const diskParent = makeSubmenuParent("Disk", diskSubmenu, miniSubmenu, [miniSubmenu]);
+    // first hover triggers a fresh enumeration on the next poll
+    diskParent.addEventListener("mouseenter", () => { wantDisksList = true; });
+    miniSubmenu.appendChild(diskParent);
+
+    // when the cursor enters a non-parent item in miniSubmenu, close nested submenus
+    // — otherwise they'd linger open while the user is interacting with sibling toggles.
     miniSubmenu.addEventListener("mouseover", (e) => {
         const item = e.target.closest(".aimdo-menu-item, .aimdo-menu-parent");
         if (item && item.classList.contains("aimdo-menu-item")) {
             gpuSubmenu.style.display = "none";
+            diskSubmenu.style.display = "none";
         }
     });
     miniSubmenu.appendChild(showNames.item);
     miniSubmenu.appendChild(showType.item);
     miniSubmenu.appendChild(showNumbers.item);
     miniSubmenu.appendChild(showUnits.item);
+    miniSubmenu.appendChild(showSeparators.item);
 
     // --- Polling interval submenu (single-select like Scale)
     const pollPresets = [100, 250, 500, 1000, 2000, 5000];
@@ -2016,113 +1601,7 @@ function createPanel() {
         dockWidthValSpan.textContent = dockSectionWidth + "px";
     }
 
-    // --- Graph submenu (style + VRAM color override)
-    const graphStyles = [
-        { key: "area",   label: "Area (stacked)" },
-        { key: "bars",   label: "Bars" },
-        { key: "ticker", label: "Ticker" },
-        { key: "dots",   label: "Dots (fade)" },
-    ];
-    const graphStyleItems = new Map();
-    function renderGraphStyleItems() {
-        for (const [k, item] of graphStyleItems) {
-            const on = k === graphStyle;
-            const label = graphStyles.find(s => s.key === k).label;
-            item.innerHTML = `<span class="aimdo-check">${on ? "✓" : ""}</span>${label}`;
-        }
-    }
-    for (const s of graphStyles) {
-        const item = document.createElement("div");
-        item.className = "aimdo-menu-item";
-        item.addEventListener("click", (e) => {
-            e.stopPropagation();
-            graphStyle = s.key;
-            saveState({ graphStyle });
-            renderGraphStyleItems();
-            redrawGraph();
-        });
-        graphSubmenu.appendChild(item);
-        graphStyleItems.set(s.key, item);
-    }
-    renderGraphStyleItems();
-    // color picker row
-    const colorRow = document.createElement("div");
-    colorRow.style.cssText = `padding:6px 10px;display:flex;align-items:center;gap:8px;font-size:11px;`;
-    colorRow.addEventListener("click", (e) => e.stopPropagation());
-    const colorInput = document.createElement("input");
-    colorInput.type = "color";
-    colorInput.value = graphVramColor || C.vram;
-    colorInput.style.cssText = `width:24px;height:18px;padding:0;border:none;background:transparent;cursor:pointer;`;
-    colorInput.addEventListener("input", () => {
-        graphVramColor = colorInput.value;
-        saveState({ graphVramColor });
-        redrawGraph();
-    });
-    const resetColor = document.createElement("span");
-    resetColor.textContent = "reset";
-    resetColor.style.cssText = `margin-left:auto;color:var(--aimdo-textDim);cursor:pointer;font-size:10px;`;
-    resetColor.addEventListener("click", () => {
-        graphVramColor = null;
-        saveState({ graphVramColor: null });
-        colorInput.value = C.vram;
-        redrawGraph();
-    });
-    colorRow.appendChild(colorInput);
-    colorRow.appendChild(document.createTextNode("VRAM color"));
-    colorRow.appendChild(resetColor);
-    graphSubmenu.appendChild(colorRow);
-
-    // total-line color picker row
-    const totalColorRow = document.createElement("div");
-    totalColorRow.style.cssText = colorRow.style.cssText;
-    totalColorRow.addEventListener("click", (e) => e.stopPropagation());
-    const totalColorInput = document.createElement("input");
-    totalColorInput.type = "color";
-    totalColorInput.value = graphTotalColor || C.totalLine;
-    totalColorInput.style.cssText = colorInput.style.cssText;
-    totalColorInput.addEventListener("input", () => {
-        graphTotalColor = totalColorInput.value;
-        saveState({ graphTotalColor });
-        redrawGraph();
-    });
-    const resetTotalColor = document.createElement("span");
-    resetTotalColor.textContent = "reset";
-    resetTotalColor.style.cssText = resetColor.style.cssText;
-    resetTotalColor.addEventListener("click", () => {
-        graphTotalColor = null;
-        saveState({ graphTotalColor: null });
-        totalColorInput.value = C.totalLine;
-        redrawGraph();
-    });
-    totalColorRow.appendChild(totalColorInput);
-    totalColorRow.appendChild(document.createTextNode("Total color"));
-    totalColorRow.appendChild(resetTotalColor);
-    graphSubmenu.appendChild(totalColorRow);
-
-    // total-line smoothness slider
-    const smoothRow = document.createElement("div");
-    smoothRow.style.cssText = `padding:6px 10px;display:flex;flex-direction:column;gap:4px;min-width:180px;font-size:10px;`;
-    smoothRow.addEventListener("click", (e) => e.stopPropagation());
-    const smoothLabel = document.createElement("div");
-    smoothLabel.style.cssText = `display:flex;justify-content:space-between;color:var(--aimdo-textDim);`;
-    smoothLabel.innerHTML = `<span>Total smoothness</span><span class="aimdo-sm-val">${graphTotalSmoothness}</span>`;
-    const smoothSlider = document.createElement("input");
-    smoothSlider.type = "range";
-    smoothSlider.min = "0";
-    smoothSlider.max = "20";
-    smoothSlider.step = "1";
-    smoothSlider.value = String(graphTotalSmoothness);
-    smoothSlider.style.cssText = `width:100%;accent-color:var(--aimdo-vram);cursor:pointer;`;
-    const smoothValSpan = smoothLabel.querySelector(".aimdo-sm-val");
-    smoothSlider.addEventListener("input", () => {
-        graphTotalSmoothness = parseInt(smoothSlider.value, 10);
-        smoothValSpan.textContent = String(graphTotalSmoothness);
-        saveState({ graphTotalSmoothness });
-        redrawGraph();
-    });
-    smoothRow.appendChild(smoothLabel);
-    smoothRow.appendChild(smoothSlider);
-    graphSubmenu.appendChild(smoothRow);
+    buildGraphSubmenu(graphSubmenu, () => redrawGraph());
 
     // --- Root menu items
     rootMenu.appendChild(makeSubmenuParent("Scale", scaleSubmenu));
@@ -2299,10 +1778,10 @@ function ensureStructure(body) {
     contentDiv.addEventListener("click", (e) => {
         const t = e.target.closest(".aimdo-gpu-util");
         if (!t) return;
-        gpuLineVisible = !gpuLineVisible;
-        saveState({ gpuLineVisible });
+        graphState.gpuLineVisible = !graphState.gpuLineVisible;
+        saveState({ gpuLineVisible: graphState.gpuLineVisible });
         redrawGraph();
-        t.style.opacity = gpuLineVisible ? "1" : "0.4";
+        t.style.opacity = graphState.gpuLineVisible ? "1" : "0.4";
     });
     // skeleton built once; renderData mutates text/widths/visibility only.
     contentDiv.innerHTML = `
@@ -2568,7 +2047,7 @@ function updateGraphTimes() {
             formatClock(historyGet(history.times, graphHover.idx)),
             formatBytes(used),
         ];
-        if (gpuLineVisible) parts.push(Math.round(historyGet(history.gpu_util, graphHover.idx)) + "%");
+        if (graphState.gpuLineVisible) parts.push(Math.round(historyGet(history.gpu_util, graphHover.idx)) + "%");
         hoverEl.textContent = parts.join(" · ");
     } else {
         hoverEl.textContent = "";
@@ -2862,6 +2341,7 @@ function renderData(body, data) {
     m.ramLabel.style.display = miniShowType ? "" : "none";
     m.vramLabel.style.display = miniShowType ? "" : "none";
 
+    m.bar.classList.toggle("has-separators", miniShowSeparators);
     m.ramSection.style.display = showRamInMini ? "" : "none";
     m.vramSection.style.display = showVramInMini ? "" : "none";
     if (data.cpu_util != null && showCpuInMini) {
@@ -2905,6 +2385,52 @@ function renderData(body, data) {
         m.diskSection.style.display = "none";
         diskState.prevRead = null;
         diskState.prevTime = 0;
+    }
+    // Free disk space — one row per selected drive, with all detected drives in
+    // the tooltip so the user sees the full picture without checking every box.
+    if (Array.isArray(data.disks)) {
+        const oldMps = allDisksCache.map(d => d.mountpoint).join("|");
+        const newMps = data.disks.map(d => d.mountpoint).join("|");
+        allDisksCache = data.disks;
+        if (_rebuildDriveMenu && oldMps !== newMps) _rebuildDriveMenu();
+    }
+    const visibleDisks = selectedDisks.length
+        ? allDisksCache.filter(d => selectedDisks.includes(d.mountpoint))
+        : [];
+    if (visibleDisks.length > 0) {
+        m.diskSpaceSection.style.display = "";
+        const rows = m.diskSpaceRows;
+        while (rows.children.length < visibleDisks.length) {
+            const row = document.createElement("div");
+            row.className = "aimdo-mini-inline mini-diskspace-drive-row";
+            row.innerHTML = `<span class="mini-diskspace-mp"></span>`
+                + `<div class="aimdo-mini-track mini-diskspace-bar"><div class="aimdo-mini-fill mini-diskspace-fill"></div></div>`
+                + `<span class="mini-diskspace-usage"></span>`;
+            rows.appendChild(row);
+        }
+        while (rows.children.length > visibleDisks.length) rows.lastChild.remove();
+        for (let i = 0; i < visibleDisks.length; i++) {
+            const d = visibleDisks[i];
+            const row = rows.children[i];
+            const mpEl = row.firstChild;
+            const fillEl = row.querySelector(".mini-diskspace-fill");
+            const usageEl = row.lastChild;
+            const total = d.total, free = d.free;
+            const used = (total != null && free != null) ? total - free : null;
+            const pct = (used != null && total) ? (used / total * 100) : 0;
+            mpEl.textContent = shortMountpoint(d.mountpoint);
+            fillEl.style.width = pct.toFixed(1) + "%";
+            // colour warms as the drive fills — same scale as gpuUtilColor (10/80 thresholds
+            // are util-shaped; for free space "low → warmer" maps better at 75/90).
+            fillEl.style.background = pct >= 90 ? C.gpuUtilHi : (pct >= 75 ? C.gpuUtil : C.pinned);
+            usageEl.textContent = miniShowNumbers
+                ? (free != null && total ? formatBytes(free) + " free" : "?")
+                : "";
+        }
+        m.diskSpaceSection.title = buildDiskTooltip(allDisksCache);
+        m.diskSpaceLabel.style.display = miniShowType ? "" : "none";
+    } else {
+        m.diskSpaceSection.style.display = "none";
     }
     if (data.total_swap > 0 && showPagefileInMini) {
         m.pagefileSection.style.display = "";
@@ -3015,6 +2541,23 @@ function renderData(body, data) {
         m.gpuSection.style.display = "none";
     }
 
+    // Group dividers: mark the first visible section of each non-leading group
+    // so CSS can draw a separator above it. Recompute every render because the
+    // first visible can change as the user toggles individual sections.
+    function markFirstVisible(group) {
+        let found = false;
+        for (const sec of group) {
+            if (!found && sec.style.display !== "none") {
+                sec.classList.add("mini-group-start");
+                found = true;
+            } else {
+                sec.classList.remove("mini-group-start");
+            }
+        }
+    }
+    markFirstVisible([m.diskSection, m.diskSpaceSection]);
+    markFirstVisible([m.cpuSection, m.gpuSection]);
+
     const cr = r.contentDiv._refs;
     cr.ramUsage.textContent = `${formatBytes(ramUsed)}|${formatBytes(ramTotal)}`;
     cr.ramSegs[0].style.width = pinnedRamPct + "%";
@@ -3060,7 +2603,7 @@ function renderData(body, data) {
     if (data.gpu_util != null) {
         cr.infoGpu.style.display = "";
         cr.infoGpu.style.color = gpuUtilColor(data.gpu_util);
-        cr.infoGpu.style.opacity = gpuLineVisible ? "1" : "0.4";
+        cr.infoGpu.style.opacity = graphState.gpuLineVisible ? "1" : "0.4";
         cr.infoGpu.textContent = `GPU ${data.gpu_util < 10 ? "0" : ""}${data.gpu_util}%`;
     } else {
         cr.infoGpu.style.display = "none";
@@ -3281,7 +2824,17 @@ app.registerExtension({
 
         async function poll() {
             try {
-                const url = showDiskInMini ? "/aimdo/vram?disk=1" : "/aimdo/vram";
+                const params = [];
+                if (showDiskInMini) params.push("disk=1");
+                // list_disks drives both the visible bars (filtered by selectedDisks)
+                // and the tooltip listing every fixed drive. The one-shot
+                // wantDisksList flag lets the settings menu request a fresh list
+                // even when nothing is selected yet.
+                if (selectedDisks.length > 0 || wantDisksList) {
+                    params.push("list_disks=1");
+                    wantDisksList = false;
+                }
+                const url = "/aimdo/vram" + (params.length ? "?" + params.join("&") : "");
                 const resp = await api.fetchApi(url);
                 const data = await resp.json();
                 renderData(body, data);

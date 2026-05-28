@@ -405,6 +405,43 @@
 .mini-disk-read-fill  { background: var(--aimdo-pinned); }
 .mini-disk-write-fill { background: var(--aimdo-vram); }
 
+/* Optional group dividers: a thin line between logical groups (memory,
+   storage, compute). The .mini-group-start class marks the first section
+   of each non-leading group. Sections of the same group sit flush; if every
+   section in a group is hidden the divider still lands on the next visible
+   group-start (acceptable, matches the leading-edge quirk elsewhere). */
+.aimdo-mini-bar.has-separators > .mini-group-start {
+    border-top: 1px solid var(--aimdo-border);
+    padding-top: 10px;
+    margin-top: 10px;
+}
+#aimdo-viz-panel.aimdo-docked .aimdo-mini-bar.has-separators > .mini-group-start {
+    border-top: 0;
+    padding-top: 0;
+    margin-top: 0;
+    border-left: 1px solid var(--aimdo-border);
+    padding-left: 16px;
+    margin-left: 6px;
+}
+
+/* free disk space: one row per selected drive, mountpoint left, bar middle, "free" right.
+   Mountpoint column is fixed-width so multiple drives align vertically. */
+.mini-diskspace-section.is-multibar .aimdo-mini-inline { line-height: 1; font-size: 8px; }
+.mini-diskspace-section.is-multibar .aimdo-mini-inline .aimdo-mini-track { height: 3px; }
+.mini-diskspace-drive-row > .mini-diskspace-mp {
+    flex-shrink: 0;
+    text-align: left;
+    min-width: 18px;
+    max-width: 36px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.mini-diskspace-drive-row > .mini-diskspace-usage {
+    flex-shrink: 0;
+    text-align: right;
+    min-width: 48px;
+}
+
 /* docked mini-bar: horizontal, fixed-width sections */
 #aimdo-viz-panel.aimdo-docked .aimdo-mini-bar {
     display: flex !important; flex-direction: row !important;
@@ -551,6 +588,16 @@
 }
 .aimdo-menu-item.is-disabled {
     opacity: 0.4;
+    cursor: default;
+}
+.aimdo-menu-header {
+    padding: 4px 10px 2px;
+    color: var(--aimdo-textDim);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-top: 1px solid var(--aimdo-border);
+    margin-top: 2px;
     cursor: default;
 }
 .aimdo-menu-item.is-disabled:hover {
