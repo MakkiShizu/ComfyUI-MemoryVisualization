@@ -3,6 +3,9 @@ NODE_CLASS_MAPPINGS = {}
 
 import logging
 import asyncio
+import ctypes
+import platform
+import subprocess
 import torch
 import server
 from aiohttp import web
@@ -79,7 +82,6 @@ def _get_cpu_name():
         return _cpu_name_cache["name"]
     _cpu_name_cache["tried"] = True
     try:
-        import platform
         sys_name = platform.system()
         if sys_name == "Windows":
             import winreg
@@ -87,7 +89,6 @@ def _get_cpu_name():
                 name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
                 _cpu_name_cache["name"] = name.strip()
         elif sys_name == "Darwin":
-            import subprocess
             _cpu_name_cache["name"] = subprocess.check_output(
                 ["sysctl", "-n", "machdep.cpu.brand_string"], timeout=2
             ).decode().strip()
@@ -108,10 +109,8 @@ _disks_cache = {"tried": False, "list": []}
 
 def _get_volume_label(mountpoint):
     try:
-        import platform
         if platform.system() != "Windows":
             return None
-        import ctypes
         buf = ctypes.create_unicode_buffer(256)
         fs = ctypes.create_unicode_buffer(256)
         ok = ctypes.windll.kernel32.GetVolumeInformationW(
@@ -142,7 +141,6 @@ def _get_disk_partitions():
 _pagefile_state = {"tried": False, "query": None}
 
 def _build_win_pagefile_query():
-    import ctypes
     from ctypes import wintypes
 
     class UNICODE_STRING(ctypes.Structure):
@@ -198,7 +196,6 @@ def _build_win_pagefile_query():
 
 def _pagefile_usage():
     """(total_bytes, used_bytes) of system pagefiles — true on-disk usage."""
-    import platform
     if platform.system() == "Windows":
         st = _pagefile_state
         if not st["tried"]:
@@ -226,7 +223,6 @@ def _pagefile_usage():
 _hardfault_state = {"tried": False, "query": None}
 
 def _build_win_hardfault_query():
-    import ctypes
     from ctypes import wintypes
 
     class PERF_PREFIX(ctypes.Structure):
@@ -265,7 +261,6 @@ def _build_win_hardfault_query():
 
 def _hard_fault_count():
     """Monotonic count of hard/major page faults, or None if unavailable."""
-    import platform
     sysname = platform.system()
     if sysname == "Windows":
         st = _hardfault_state
@@ -290,6 +285,25 @@ def _hard_fault_count():
         except Exception as e:
             log.debug("aimdo-viz: /proc/vmstat read failed: %s", e)
     return None
+
+
+def _vbar_residency(vbar, used_pages):
+    """Per-page residency flags for the used range only. vbar.get_residency()
+    builds a Python list over the whole ~10x-overallocated VBAR every poll
+    (hundreds of us for large models); we run the same native fill but convert
+    only the used slice. Falls back to the full read on any binding mismatch."""
+    try:
+        lib = comfy_aimdo.control.lib
+        nr = vbar.get_nr_pages()
+        buf = (ctypes.c_uint8 * nr)()
+        lib.vbar_get_residency(vbar._devctx, vbar._ptr, buf, nr)
+        return buf[:max(0, min(used_pages, nr))]
+    except Exception as e:
+        log.debug("aimdo-viz: bounded residency read failed, using full: %s", e)
+        try:
+            return vbar.get_residency()[:used_pages]
+        except Exception:
+            return []
 
 
 def _detect_model_type(model_obj):
@@ -370,7 +384,6 @@ async def aimdo_vram_status(request):
                 try:
                     loaded_bytes = vbar.loaded_size()
                     vbar_loaded_total += loaded_bytes
-                    full_residency = vbar.get_residency()
                     page_size = getattr(vbar, 'page_size', 32 * 1024 * 1024)
                     vbar_offset = getattr(vbar, 'offset', 0)
                     if vbar_offset > 0:
@@ -381,7 +394,7 @@ async def aimdo_vram_status(request):
                         "device": str(dev),
                         "loaded": loaded_bytes,
                         "watermark": vbar.get_watermark(),
-                        "residency": full_residency[:used_pages],
+                        "residency": _vbar_residency(vbar, used_pages),
                     })
                 except Exception as e:
                     log.warning("aimdo-viz: VBAR query failed: %s", e)
