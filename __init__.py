@@ -292,17 +292,17 @@ async def aimdo_vram_status(request):
 
     ram = psutil.virtual_memory()
     proc = psutil.Process()
-    process_ram = proc.memory_info().rss
-    try:
-        swap = psutil.swap_memory()
-        swap_total, swap_used = swap.total, swap.used
-    except Exception:
-        swap_total, swap_used = 0, 0
-    try:
-        _full = proc.memory_full_info()
-        process_swap = getattr(_full, 'pagefile', None) or getattr(_full, 'swap', 0)
-    except Exception:
-        process_swap = 0
+
+    _meminfo = proc.memory_info()
+    process_ram = _meminfo.rss
+    swap_total = swap_used = process_swap = 0
+    if request.query.get("pagefile") == "1":
+        try:
+            swap = psutil.swap_memory()
+            swap_total, swap_used = swap.total, swap.used
+        except Exception:
+            pass
+        process_swap = getattr(_meminfo, 'pagefile', 0)
 
     disk_read = disk_write = None
     if request.query.get("disk") == "1":

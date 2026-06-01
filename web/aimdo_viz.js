@@ -2437,17 +2437,21 @@ function renderData(body, data) {
     }
     if (data.total_swap > 0 && showPagefileInMini) {
         m.pagefileSection.style.display = "";
-        const swapPct = Math.round(data.used_swap / data.total_swap * 100);
-        const procSwap = Math.min(data.process_swap || 0, data.used_swap);
-        const procSwapPct = data.total_swap > 0 ? (procSwap / data.total_swap * 100) : 0;
-        const otherSwapPct = Math.max(0, (data.used_swap - procSwap) / data.total_swap * 100);
+        // On Windows process pagefile = commit charge, often exceeds system used_swap. 
+        // Use the larger as the effective "used" so the bar reflects reality on both Windows and Linux.
+        const procSwap = Math.min(data.process_swap || 0, data.total_swap);
+        const usedSwap = Math.max(data.used_swap || 0, procSwap);
+        const swapPct = Math.round(usedSwap / data.total_swap * 100);
+        const procSwapPct = procSwap / data.total_swap * 100;
+        const otherSwap = Math.max(0, usedSwap - procSwap);
+        const otherSwapPct = otherSwap / data.total_swap * 100;
         m.pagefileUsage.textContent = _n
-            ? (_u ? `${formatBytes(data.used_swap)}|${formatBytes(data.total_swap)}` : (swapPct < 10 ? "0" : "") + swapPct + "%")
+            ? (_u ? `${formatBytes(usedSwap)}|${formatBytes(data.total_swap)}` : (swapPct < 10 ? "0" : "") + swapPct + "%")
             : "";
         m.pagefileSegs[0].style.width = procSwapPct + "%";
         m.pagefileSegs[0].title = "process: " + formatBytes(procSwap);
         m.pagefileSegs[1].style.width = otherSwapPct + "%";
-        m.pagefileSegs[1].title = "other: " + formatBytes(data.used_swap - procSwap);
+        m.pagefileSegs[1].title = "other: " + formatBytes(otherSwap);
         m.pagefileLabel.style.display = miniShowType ? "" : "none";
     } else {
         m.pagefileSection.style.display = "none";
@@ -2825,10 +2829,17 @@ app.registerExtension({
             }
         });
 
+        let pollTimer = null;
         async function poll() {
+            // Skip fetch when the tab is hidden or the panel is detached
+            if (document.hidden || !body.isConnected) {
+                pollTimer = setTimeout(poll, pollInterval);
+                return;
+            }
             try {
                 const params = [];
                 if (showDiskInMini) params.push("disk=1");
+                if (showPagefileInMini) params.push("pagefile=1");
                 // list_disks drives both the visible bars (filtered by selectedDisks)
                 // and the tooltip listing every fixed drive. The one-shot
                 // wantDisksList flag lets the settings menu request a fresh list
@@ -2845,8 +2856,17 @@ app.registerExtension({
                 body.innerHTML = `<div style="color:#aa5555;">Error fetching data</div>`;
                 refs = null;
             }
-            setTimeout(poll, pollInterval);
+            pollTimer = setTimeout(poll, pollInterval);
         }
+
+        // Wake immediately when the tab becomes visible
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && pollTimer != null) {
+                clearTimeout(pollTimer);
+                pollTimer = null;
+                poll();
+            }
+        });
 
         poll();
     }
