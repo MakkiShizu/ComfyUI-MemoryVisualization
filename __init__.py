@@ -19,9 +19,9 @@ try:
 except ImportError:
     comfy_aimdo = None
 
-# NVML handle + power-cap cache. Cap is static for a given driver state,
-# so we only query it once. Handle init is best-effort; failures stick.
-_nvml_state = {"handle": None, "tried": False, "power_limit": None}
+# NVML handle + power-cap cache. Cap and device name are static for a given
+# driver state, so we only query them once. Handle init is best-effort; failures stick.
+_nvml_state = {"handle": None, "tried": False, "power_limit": None, "gpu_name": None}
 
 def _nvml_handle(device):
     if _nvml_state["tried"]:
@@ -176,10 +176,10 @@ def _build_win_pagefile_query():
     si = SYSTEM_INFO()
     ctypes.windll.kernel32.GetSystemInfo(ctypes.byref(si))
     page = si.dwPageSize
+    buf = ctypes.create_string_buffer(8192)
+    ret = wintypes.ULONG(0)
 
     def query():
-        buf = ctypes.create_string_buffer(8192)
-        ret = wintypes.ULONG(0)
         status = ntdll.NtQuerySystemInformation(SystemPageFileInformation, buf, len(buf), ctypes.byref(ret))
         if status < 0 or ret.value == 0:
             return 0, 0
@@ -429,10 +429,12 @@ async def aimdo_vram_status(request):
         gpu_power = None
     gpu_power_limit = _nvml_power_limit(device)  # mW
 
-    try:
-        gpu_name = torch.cuda.get_device_name(device)
-    except Exception:
-        gpu_name = None
+    gpu_name = _nvml_state["gpu_name"]
+    if gpu_name is None:
+        try:
+            gpu_name = _nvml_state["gpu_name"] = torch.cuda.get_device_name(device)
+        except Exception:
+            pass
 
     # non-blocking; first call after process start returns 0, subsequent calls are real
     try:
