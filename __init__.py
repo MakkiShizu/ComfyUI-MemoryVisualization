@@ -137,6 +137,161 @@ def _get_disk_partitions():
     return _disks_cache["list"]
 
 
+# Windows reads true pagefile.sys usage via NtQuerySystemInformation
+# falls back to psutil on non-Windows or on any failure.
+_pagefile_state = {"tried": False, "query": None}
+
+def _build_win_pagefile_query():
+    import ctypes
+    from ctypes import wintypes
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [("Length", wintypes.USHORT),
+                    ("MaximumLength", wintypes.USHORT),
+                    ("Buffer", wintypes.LPWSTR)]
+
+    class SYSTEM_PAGEFILE_INFORMATION(ctypes.Structure):
+        _fields_ = [("NextEntryOffset", wintypes.ULONG),
+                    ("TotalSize", wintypes.ULONG),
+                    ("TotalInUse", wintypes.ULONG),
+                    ("PeakUsage", wintypes.ULONG),
+                    ("PageFileName", UNICODE_STRING)]
+
+    class SYSTEM_INFO(ctypes.Structure):
+        _fields_ = [("wProcessorArchitecture", wintypes.WORD),
+                    ("wReserved", wintypes.WORD),
+                    ("dwPageSize", wintypes.DWORD),
+                    ("lpMinimumApplicationAddress", ctypes.c_void_p),
+                    ("lpMaximumApplicationAddress", ctypes.c_void_p),
+                    ("dwActiveProcessorMask", ctypes.POINTER(wintypes.DWORD)),
+                    ("dwNumberOfProcessors", wintypes.DWORD),
+                    ("dwProcessorType", wintypes.DWORD),
+                    ("dwAllocationGranularity", wintypes.DWORD),
+                    ("wProcessorLevel", wintypes.WORD),
+                    ("wProcessorRevision", wintypes.WORD)]
+
+    SystemPageFileInformation = 18
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtQuerySystemInformation.restype = wintypes.LONG
+    si = SYSTEM_INFO()
+    ctypes.windll.kernel32.GetSystemInfo(ctypes.byref(si))
+    page = si.dwPageSize
+
+    def query():
+        buf = ctypes.create_string_buffer(8192)
+        ret = wintypes.ULONG(0)
+        status = ntdll.NtQuerySystemInformation(SystemPageFileInformation, buf, len(buf), ctypes.byref(ret))
+        if status < 0 or ret.value == 0:
+            return 0, 0
+        total = used = 0
+        off = 0
+        while True:
+            info = SYSTEM_PAGEFILE_INFORMATION.from_buffer(buf, off)
+            total += info.TotalSize
+            used += info.TotalInUse
+            if info.NextEntryOffset == 0:
+                break
+            off += info.NextEntryOffset
+        return total * page, used * page
+
+    return query
+
+def _pagefile_usage():
+    """(total_bytes, used_bytes) of system pagefiles — true on-disk usage."""
+    import platform
+    if platform.system() == "Windows":
+        st = _pagefile_state
+        if not st["tried"]:
+            st["tried"] = True
+            try:
+                st["query"] = _build_win_pagefile_query()
+            except Exception as e:
+                log.debug("aimdo-viz: pagefile query init failed: %s", e)
+        if st["query"] is not None:
+            try:
+                return st["query"]()
+            except Exception as e:
+                log.debug("aimdo-viz: pagefile query failed: %s", e)
+    try:
+        sw = psutil.swap_memory()
+        return sw.total, sw.used
+    except Exception:
+        return 0, 0
+
+
+# Hard page faults — faults that hit disk, i.e. memory paged back in. A rising
+# rate is the thrashing signal. Windows reads SYSTEM_PERFORMANCE_INFORMATION;
+# Linux reads /proc/vmstat pgmajfault. Returns a monotonic count; the client
+# differentiates it into faults/sec.
+_hardfault_state = {"tried": False, "query": None}
+
+def _build_win_hardfault_query():
+    import ctypes
+    from ctypes import wintypes
+
+    class PERF_PREFIX(ctypes.Structure):
+        _fields_ = [("IdleProcessTime", ctypes.c_longlong),
+                    ("IoReadTransferCount", ctypes.c_longlong),
+                    ("IoWriteTransferCount", ctypes.c_longlong),
+                    ("IoOtherTransferCount", ctypes.c_longlong),
+                    ("IoReadOperationCount", wintypes.ULONG),
+                    ("IoWriteOperationCount", wintypes.ULONG),
+                    ("IoOtherOperationCount", wintypes.ULONG),
+                    ("AvailablePages", wintypes.ULONG),
+                    ("CommittedPages", wintypes.ULONG),
+                    ("CommitLimit", wintypes.ULONG),
+                    ("PeakCommitment", wintypes.ULONG),
+                    ("PageFaultCount", wintypes.ULONG),
+                    ("CopyOnWriteCount", wintypes.ULONG),
+                    ("TransitionCount", wintypes.ULONG),
+                    ("CacheTransitionCount", wintypes.ULONG),
+                    ("DemandZeroCount", wintypes.ULONG),
+                    ("PageReadCount", wintypes.ULONG),
+                    ("PageReadIoCount", wintypes.ULONG)]
+
+    SystemPerformanceInformation = 2
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtQuerySystemInformation.restype = wintypes.LONG
+    buf = ctypes.create_string_buffer(8192)
+    ret = wintypes.ULONG(0)
+
+    def query():
+        status = ntdll.NtQuerySystemInformation(SystemPerformanceInformation, buf, len(buf), ctypes.byref(ret))
+        if status < 0 or ret.value < ctypes.sizeof(PERF_PREFIX):
+            return None
+        return PERF_PREFIX.from_buffer(buf).PageReadIoCount
+
+    return query
+
+def _hard_fault_count():
+    """Monotonic count of hard/major page faults, or None if unavailable."""
+    import platform
+    sysname = platform.system()
+    if sysname == "Windows":
+        st = _hardfault_state
+        if not st["tried"]:
+            st["tried"] = True
+            try:
+                st["query"] = _build_win_hardfault_query()
+            except Exception as e:
+                log.debug("aimdo-viz: hardfault query init failed: %s", e)
+        if st["query"] is not None:
+            try:
+                return st["query"]()
+            except Exception as e:
+                log.debug("aimdo-viz: hardfault query failed: %s", e)
+        return None
+    if sysname == "Linux":
+        try:
+            with open("/proc/vmstat") as f:
+                for line in f:
+                    if line.startswith("pgmajfault "):
+                        return int(line.split()[1])
+        except Exception as e:
+            log.debug("aimdo-viz: /proc/vmstat read failed: %s", e)
+    return None
+
+
 def _detect_model_type(model_obj):
     """Classify a loaded model into a ComfyUI slot type so the UI can color it
     consistently with node connection colors. Returns None when nothing matches
@@ -293,16 +448,14 @@ async def aimdo_vram_status(request):
     ram = psutil.virtual_memory()
     proc = psutil.Process()
 
-    _meminfo = proc.memory_info()
-    process_ram = _meminfo.rss
-    swap_total = swap_used = process_swap = 0
+    process_ram = proc.memory_info().rss
+    swap_total = swap_used = 0
     if request.query.get("pagefile") == "1":
-        try:
-            swap = psutil.swap_memory()
-            swap_total, swap_used = swap.total, swap.used
-        except Exception:
-            pass
-        process_swap = getattr(_meminfo, 'pagefile', 0)
+        swap_total, swap_used = _pagefile_usage()
+
+    hard_faults = None
+    if request.query.get("faults") == "1":
+        hard_faults = _hard_fault_count()
 
     disk_read = disk_write = None
     if request.query.get("disk") == "1":
@@ -349,7 +502,7 @@ async def aimdo_vram_status(request):
         "used_ram": ram.used,
         "total_swap": swap_total,
         "used_swap": swap_used,
-        "process_swap": process_swap,
+        "hard_faults": hard_faults,
         "disk_read": disk_read,
         "disk_write": disk_write,
         "disks": disks_list,

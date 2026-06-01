@@ -409,6 +409,7 @@
 }
 .mini-disk-read-fill  { background: var(--aimdo-pinned); }
 .mini-disk-write-fill { background: var(--aimdo-vram); }
+.mini-faults-fill     { background: var(--aimdo-gpuUtil); }
 
 /* Optional group dividers: a thin line between logical groups (memory,
    storage, compute). The .mini-group-start class marks the first section

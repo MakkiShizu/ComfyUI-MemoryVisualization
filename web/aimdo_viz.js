@@ -31,6 +31,10 @@ const diskState = {
     prevRead: null, prevWrite: null, prevTime: 0,
     peakRead: DISK_PEAK_FLOOR, peakWrite: DISK_PEAK_FLOOR,
 };
+let showFaultsInMini = false;
+const FAULT_PEAK_FLOOR = 50;   // faults/s — keeps light activity visible
+const FAULT_PEAK_HALFLIFE = 30;
+const faultState = { prev: null, prevTime: 0, peak: FAULT_PEAK_FLOOR };
 // Free-disk-space monitor — array of selected mountpoints (e.g. ["C:\\","D:\\"]).
 // allDisksCache holds the most recent full enumeration so the tooltip can list
 // every fixed drive even when only some are pinned to the bar.
@@ -347,6 +351,7 @@ function createPanel() {
     if (typeof saved.showCpuInMini === "boolean") showCpuInMini = saved.showCpuInMini;
     if (typeof saved.showPagefileInMini === "boolean") showPagefileInMini = saved.showPagefileInMini;
     if (typeof saved.showDiskInMini === "boolean") showDiskInMini = saved.showDiskInMini;
+    if (typeof saved.showFaultsInMini === "boolean") showFaultsInMini = saved.showFaultsInMini;
     if (Array.isArray(saved.selectedDisks)) selectedDisks = saved.selectedDisks.slice();
     if (typeof saved.showHwNames === "boolean") showHwNames = saved.showHwNames;
     if (typeof saved.showTitle === "boolean") showTitle = saved.showTitle;
@@ -726,8 +731,13 @@ function createPanel() {
         </div>
         <div class="aimdo-mini-track mini-pagefile-bar">
             <div class="aimdo-seg aimdo-seg-python"></div>
-            <div class="aimdo-seg aimdo-seg-other"></div>
         </div>
+    </div>
+    <div class="mini-faults-section">
+        <div class="aimdo-mini-row">
+            <span class="mini-faults-label">Faults</span><span class="mini-faults-usage"></span>
+        </div>
+        <div class="aimdo-mini-track mini-faults-bar"><div class="aimdo-mini-fill mini-faults-fill"></div></div>
     </div>
     <div class="mini-disk-section is-multibar">
         <div class="aimdo-mini-row mini-disk-row">
@@ -791,6 +801,10 @@ function createPanel() {
         pagefileLabel: miniBar.querySelector(".mini-pagefile-label"),
         pagefileUsage: miniBar.querySelector(".mini-pagefile-usage"),
         pagefileSegs: miniBar.querySelectorAll(".mini-pagefile-bar > .aimdo-seg"),
+        faultsSection: miniBar.querySelector(".mini-faults-section"),
+        faultsLabel: miniBar.querySelector(".mini-faults-label"),
+        faultsUsage: miniBar.querySelector(".mini-faults-usage"),
+        faultsFill: miniBar.querySelector(".mini-faults-fill"),
         diskSection: miniBar.querySelector(".mini-disk-section"),
         diskLabel: miniBar.querySelector(".mini-disk-label"),
         diskReadUsage: miniBar.querySelector(".mini-disk-read-usage"),
@@ -1409,6 +1423,8 @@ function createPanel() {
         () => showPagefileInMini, v => { showPagefileInMini = v; }, "showPagefileInMini");
     const showDisk = makeToggleItem("I/O",
         () => showDiskInMini, v => { showDiskInMini = v; }, "showDiskInMini");
+    const showFaults = makeToggleItem("Thrashing (hard faults)",
+        () => showFaultsInMini, v => { showFaultsInMini = v; }, "showFaultsInMini");
     // labeled "util" since these live under the nested GPU submenu now
     const showGpu = makeToggleItem("util",
         () => showGpuInMini, v => { showGpuInMini = v; }, "showGpuInMini");
@@ -1442,6 +1458,7 @@ function createPanel() {
     // Drive items are populated lazily from the next poll once list_disks=1
     // is requested. Selecting any drive enables the disk-space mini section.
     diskSubmenu.appendChild(showDisk.item);
+    diskSubmenu.appendChild(showFaults.item);
     const drivesHeader = document.createElement("div");
     drivesHeader.className = "aimdo-menu-header";
     drivesHeader.textContent = "Drives";
@@ -1835,7 +1852,6 @@ function ensureStructure(body) {
             </div>
             <div class="content-pagefile-bar" style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
                 <div class="aimdo-seg aimdo-seg-python"></div>
-                <div class="aimdo-seg aimdo-seg-other"></div>
             </div>
         </div>
     `;
@@ -2437,24 +2453,37 @@ function renderData(body, data) {
     }
     if (data.total_swap > 0 && showPagefileInMini) {
         m.pagefileSection.style.display = "";
-        // On Windows process pagefile = commit charge, often exceeds system used_swap. 
-        // Use the larger as the effective "used" so the bar reflects reality on both Windows and Linux.
-        const procSwap = Math.min(data.process_swap || 0, data.total_swap);
-        const usedSwap = Math.max(data.used_swap || 0, procSwap);
-        const swapPct = Math.round(usedSwap / data.total_swap * 100);
-        const procSwapPct = procSwap / data.total_swap * 100;
-        const otherSwap = Math.max(0, usedSwap - procSwap);
-        const otherSwapPct = otherSwap / data.total_swap * 100;
+        const swapPct = Math.round(data.used_swap / data.total_swap * 100);
         m.pagefileUsage.textContent = _n
-            ? (_u ? `${formatBytes(usedSwap)}|${formatBytes(data.total_swap)}` : (swapPct < 10 ? "0" : "") + swapPct + "%")
+            ? (_u ? `${formatBytes(data.used_swap)}|${formatBytes(data.total_swap)}` : (swapPct < 10 ? "0" : "") + swapPct + "%")
             : "";
-        m.pagefileSegs[0].style.width = procSwapPct + "%";
-        m.pagefileSegs[0].title = "process: " + formatBytes(procSwap);
-        m.pagefileSegs[1].style.width = otherSwapPct + "%";
-        m.pagefileSegs[1].title = "other: " + formatBytes(otherSwap);
+        m.pagefileSegs[0].style.width = (data.used_swap / data.total_swap * 100) + "%";
         m.pagefileLabel.style.display = miniShowType ? "" : "none";
     } else {
         m.pagefileSection.style.display = "none";
+    }
+    if (showFaultsInMini && data.hard_faults != null) {
+        m.faultsSection.style.display = "";
+        const now = performance.now();
+        let rate = 0;
+        if (faultState.prev != null && faultState.prevTime > 0) {
+            const dt = (now - faultState.prevTime) / 1000;
+            if (dt > 0) {
+                rate = Math.max(0, (data.hard_faults - faultState.prev) / dt);
+                const decay = Math.pow(0.5, dt / FAULT_PEAK_HALFLIFE);
+                faultState.peak = Math.max(rate, faultState.peak * decay, FAULT_PEAK_FLOOR);
+            }
+        }
+        faultState.prev = data.hard_faults;
+        faultState.prevTime = now;
+        // bar height is rate vs recent peak; fixed color (height conveys activity)
+        m.faultsFill.style.width = (rate / faultState.peak * 100) + "%";
+        m.faultsUsage.textContent = _n ? `${Math.round(rate)}/s` : "";
+        m.faultsLabel.style.display = miniShowType ? "" : "none";
+    } else {
+        m.faultsSection.style.display = "none";
+        faultState.prev = null;
+        faultState.prevTime = 0;
     }
     // each bar is independently toggleable; null data shows "N/A" rather than hiding,
     // so a missing pynvml doesn't make the whole section vanish silently.
@@ -2638,14 +2667,8 @@ function renderData(body, data) {
     }
     if (data.total_swap > 0) {
         cr.pagefileSection.style.display = "";
-        const procSwap = Math.min(data.process_swap || 0, data.used_swap);
-        const procSwapPct = procSwap / data.total_swap * 100;
-        const otherSwapPct = Math.max(0, (data.used_swap - procSwap) / data.total_swap * 100);
+        cr.pagefileSegs[0].style.width = (data.used_swap / data.total_swap * 100) + "%";
         cr.pagefileUsage.textContent = `${formatBytes(data.used_swap)}|${formatBytes(data.total_swap)}`;
-        cr.pagefileSegs[0].style.width = procSwapPct + "%";
-        cr.pagefileSegs[0].title = "process: " + formatBytes(procSwap);
-        cr.pagefileSegs[1].style.width = otherSwapPct + "%";
-        cr.pagefileSegs[1].title = "other: " + formatBytes(data.used_swap - procSwap);
     } else {
         cr.pagefileSection.style.display = "none";
     }
@@ -2840,6 +2863,7 @@ app.registerExtension({
                 const params = [];
                 if (showDiskInMini) params.push("disk=1");
                 if (showPagefileInMini) params.push("pagefile=1");
+                if (showFaultsInMini) params.push("faults=1");
                 // list_disks drives both the visible bars (filtered by selectedDisks)
                 // and the tooltip listing every fixed drive. The one-shot
                 // wantDisksList flag lets the settings menu request a fresh list
