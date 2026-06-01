@@ -456,6 +456,9 @@ function createPanel() {
         chromeCache = { fullBottom: bottom, containers, leaves, sideLeft, sideRight };
     }
     function invalidateChromeCache() { chromeCache = null; }
+    // sidebars don't fire window.resize and may overlay (not shrink) the canvas, so the
+    // canvas ResizeObserver alone can't catch them — drop the stale cache and re-clamp here.
+    function onSideChromeChange() { invalidateChromeCache(); applyOffsets(); }
     window.addEventListener("resize", invalidateChromeCache);
     let chromeObserversAttached = false;
     function attachChromeObservers() {
@@ -468,6 +471,16 @@ function createPanel() {
         for (const t of targets) {
             new MutationObserver(invalidateChromeCache).observe(t, { childList: true, subtree: true });
             if (typeof ResizeObserver !== "undefined") new ResizeObserver(invalidateChromeCache).observe(t);
+        }
+        // body-side wrappers are stable grid areas; the sidebar panel toggles inside them,
+        // changing their width. Observe both so opening either sidebar re-clamps the panel.
+        for (const sel of [".comfyui-body-left", ".comfyui-body-right"]) {
+            const el = document.querySelector(sel);
+            if (!el) continue;
+            // childList only (no subtree) — catch the panel toggling in/out without firing
+            // on the sidebar's own live content updates. Width changes covered by the resize obs.
+            new MutationObserver(onSideChromeChange).observe(el, { childList: true });
+            if (typeof ResizeObserver !== "undefined") new ResizeObserver(onSideChromeChange).observe(el);
         }
     }
     attachChromeObservers();
