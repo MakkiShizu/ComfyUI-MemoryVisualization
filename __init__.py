@@ -26,6 +26,21 @@ except ImportError:
 # driver state, so we only query them once. Handle init is best-effort; failures stick.
 _nvml_state = {"handle": None, "tried": False, "power_limit": None, "gpu_name": None}
 
+def _resolve_nvml_handle(pynvml, device):
+    # NVML enumerates physical GPUs and ignores CUDA_VISIBLE_DEVICES, so the torch
+    # device index can point at the wrong card on multi-GPU systems. Match by UUID.
+    idx = device.index if device.index is not None else torch.cuda.current_device()
+    try:
+        torch_uuid = "GPU-" + str(torch.cuda.get_device_properties(idx).uuid)
+        for i in range(pynvml.nvmlDeviceGetCount()):
+            h = pynvml.nvmlDeviceGetHandleByIndex(i)
+            uuid = pynvml.nvmlDeviceGetUUID(h)
+            if (uuid.decode() if isinstance(uuid, bytes) else uuid) == torch_uuid:
+                return h
+    except Exception as e:
+        log.debug("aimdo-viz: nvml uuid match failed: %s", e)
+    return pynvml.nvmlDeviceGetHandleByIndex(idx)
+
 def _nvml_handle(device):
     if _nvml_state["tried"]:
         return _nvml_state["handle"]
@@ -33,8 +48,7 @@ def _nvml_handle(device):
     try:
         import pynvml
         pynvml.nvmlInit()
-        idx = device.index if device.index is not None else 0
-        _nvml_state["handle"] = pynvml.nvmlDeviceGetHandleByIndex(idx)
+        _nvml_state["handle"] = _resolve_nvml_handle(pynvml, device)
     except Exception as e:
         log.debug("aimdo-viz: pynvml init failed: %s", e)
     return _nvml_state["handle"]
@@ -444,10 +458,19 @@ async def aimdo_vram_status(request):
 
     gpu_name = _nvml_state["gpu_name"]
     if gpu_name is None:
-        try:
-            gpu_name = _nvml_state["gpu_name"] = torch.cuda.get_device_name(device)
-        except Exception:
-            pass
+        h = _nvml_handle(device)
+        if h is not None:
+            try:
+                import pynvml
+                name = pynvml.nvmlDeviceGetName(h)
+                gpu_name = _nvml_state["gpu_name"] = name.decode() if isinstance(name, bytes) else name
+            except Exception as e:
+                log.debug("aimdo-viz: nvmlDeviceGetName failed: %s", e)
+        if gpu_name is None:
+            try:
+                gpu_name = _nvml_state["gpu_name"] = torch.cuda.get_device_name(device)
+            except Exception:
+                pass
 
     # non-blocking; first call after process start returns 0, subsequent calls are real
     try:
