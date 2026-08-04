@@ -614,6 +614,13 @@
 .aimdo-menu-item.is-disabled:hover {
     background: transparent;
 }
+/* destructive action (e.g. "reset all settings") — flagged red so it stands out */
+.aimdo-menu-danger {
+    color: #e5544c;
+}
+.aimdo-menu-danger:hover {
+    color: #ff7b73;
+}
 .aimdo-menu-parent {
     padding: 4px 10px; cursor: default; white-space: nowrap;
     display: flex; justify-content: space-between; gap: 12px;

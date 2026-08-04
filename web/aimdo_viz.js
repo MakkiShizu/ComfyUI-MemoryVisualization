@@ -247,10 +247,10 @@ function buildDiskTooltip(disks) {
     return disks.map(d => {
         const mp = shortMountpoint(d.mountpoint);
         const label = d.label ? ` "${d.label}"` : "";
-        if (d.total == null || d.free == null) return `${mp}${label}: unavailable`;
+        if (d.total == null || d.free == null) return `${mp}${label}：不可用`;
         const used = d.total - d.free;
         const pct = Math.round(used / d.total * 100);
-        return `${mp}${label}: ${formatBytes(used)} / ${formatBytes(d.total)} (${pct}% used, ${formatBytes(d.free)} free)`;
+        return `${mp}${label}：${formatBytes(used)} / ${formatBytes(d.total)}（已用 ${pct}%，可用 ${formatBytes(d.free)}）`;
     }).join("\n");
 }
 
@@ -607,7 +607,7 @@ function createPanel() {
     function makeDropZone(side) {
         const dz = document.createElement("div");
         dz.className = "aimdo-dropzone aimdo-dropzone-" + side;
-        dz.textContent = "Dock " + side;
+        dz.textContent = side === "left" ? "停靠到左侧" : "停靠到右侧";
         dz.addEventListener("mouseenter", () => {
             if (!dragging) return;
             dropZoneHoverSide = side;
@@ -707,18 +707,18 @@ function createPanel() {
     // visible drag affordance matching ComfyUI's docked actionbar handle — six dots in a 2x3 grid
     const dragHandle = document.createElement("span");
     dragHandle.className = "aimdo-drag-handle";
-    dragHandle.title = "Drag to move (or to dock at the top)";
+    dragHandle.title = "拖动以移动（或拖到顶部停靠）";
     header.appendChild(dragHandle);
     const titleSpan = document.createElement("span");
     titleSpan.className = "aimdo-title";
-    titleSpan.textContent = "Memory";
+    titleSpan.textContent = "内存";
     header.appendChild(titleSpan);
 
     const miniBar = document.createElement("div");
     miniBar.className = "aimdo-mini-bar";
     miniBar.innerHTML = `<div class="mini-ram-section">
         <div class="aimdo-mini-row">
-            <span class="mini-ram-label">RAM</span><span class="mini-ram-usage"></span>
+            <span class="mini-ram-label">内存</span><span class="mini-ram-usage"></span>
         </div>
         <div class="aimdo-mini-track mini-ram-bar">
             <div class="aimdo-seg aimdo-seg-pinned"></div>
@@ -729,7 +729,7 @@ function createPanel() {
     </div>
     <div class="mini-vram-section">
         <div class="aimdo-mini-row">
-            <span class="mini-vram-label">VRAM</span><span class="mini-vram-usage"></span>
+            <span class="mini-vram-label">显存</span><span class="mini-vram-usage"></span>
         </div>
         <div class="aimdo-mini-track mini-vram-bar">
             <div class="aimdo-seg aimdo-seg-vram"></div>
@@ -740,7 +740,7 @@ function createPanel() {
     </div>
     <div class="mini-pagefile-section">
         <div class="aimdo-mini-row">
-            <span class="mini-pagefile-label">Page</span><span class="mini-pagefile-usage"></span>
+            <span class="mini-pagefile-label">页面</span><span class="mini-pagefile-usage"></span>
         </div>
         <div class="aimdo-mini-track mini-pagefile-bar">
             <div class="aimdo-seg aimdo-seg-python"></div>
@@ -748,13 +748,13 @@ function createPanel() {
     </div>
     <div class="mini-faults-section">
         <div class="aimdo-mini-row">
-            <span class="mini-faults-label">Faults</span><span class="mini-faults-usage"></span>
+            <span class="mini-faults-label">缺页</span><span class="mini-faults-usage"></span>
         </div>
         <div class="aimdo-mini-track mini-faults-bar"><div class="aimdo-mini-fill mini-faults-fill"></div></div>
     </div>
     <div class="mini-disk-section is-multibar">
         <div class="aimdo-mini-row mini-disk-row">
-            <span class="mini-disk-label">Disk</span><span class="mini-disk-header-value"></span>
+            <span class="mini-disk-label">磁盘</span><span class="mini-disk-header-value"></span>
         </div>
         <div class="aimdo-mini-inline mini-disk-read-row">
             <div class="aimdo-mini-track mini-disk-read-bar"><div class="aimdo-mini-fill mini-disk-read-fill"></div></div>
@@ -767,7 +767,7 @@ function createPanel() {
     </div>
     <div class="mini-diskspace-section is-multibar">
         <div class="aimdo-mini-row mini-diskspace-row">
-            <span class="mini-diskspace-label">Disk space</span>
+            <span class="mini-diskspace-label">磁盘空间</span>
         </div>
         <div class="mini-diskspace-rows"></div>
     </div>
@@ -856,11 +856,11 @@ function createPanel() {
         if (execState.running) {
             execBtn.classList.add("is-running");
             execBtn.textContent = "■";
-            execBtn.title = "Cancel running workflow";
+            execBtn.title = "取消正在运行的工作流";
         } else {
             execBtn.classList.remove("is-running");
             execBtn.textContent = "▶";
-            execBtn.title = "Run workflow";
+            execBtn.title = "运行工作流";
         }
     }
     updateExecBtnState();
@@ -884,20 +884,20 @@ function createPanel() {
 
     const unloadBtn = document.createElement("span");
     unloadBtn.className = "aimdo-btn";
-    unloadBtn.textContent = "unload ▾";
-    unloadBtn.title = "Unload models / free cache (click for options)";
+    unloadBtn.textContent = "卸载 ▾";
+    unloadBtn.title = "卸载模型 / 释放缓存（点击查看选项）";
 
     const unloadMenu = document.createElement("div");
     unloadMenu.className = "aimdo-menu";
     unloadMenu.style.minWidth = "160px";
     const unloadOptions = [
-        { label: "aimdo (immediate)", title: "Immediately unload aimdo-managed models", run: () =>
+        { label: "aimdo（立即）", title: "立即卸载 aimdo 管理的模型", run: () =>
             api.fetchApi("/aimdo/unload_all", { method: "POST" }) },
-        { label: "models", title: "ComfyUI /free — unload models on next queue tick", run: () =>
+        { label: "模型", title: "ComfyUI /free — 在下一个队列节拍卸载模型", run: () =>
             api.fetchApi("/free", { method: "POST",
                 body: JSON.stringify({ unload_models: true }),
                 headers: { "Content-Type": "application/json" } }) },
-        { label: "models + node cache", title: "ComfyUI /free — unload models and clear node output cache", run: () =>
+        { label: "模型 + 节点缓存", title: "ComfyUI /free — 卸载模型并清空节点输出缓存", run: () =>
             api.fetchApi("/free", { method: "POST",
                 body: JSON.stringify({ unload_models: true, free_memory: true }),
                 headers: { "Content-Type": "application/json" } }) },
@@ -912,7 +912,7 @@ function createPanel() {
             unloadMenu.style.display = "none";
             unloadBtn.textContent = "...";
             try { await opt.run(); }
-            finally { unloadBtn.textContent = "unload ▾"; }
+            finally { unloadBtn.textContent = "卸载 ▾"; }
         });
         unloadMenu.appendChild(item);
     }
@@ -947,12 +947,12 @@ function createPanel() {
     popoutBtn.className = "aimdo-btn-icon";
     popoutBtn.style.fontSize = "12px";
     popoutBtn.textContent = "\u2924";
-    popoutBtn.title = "Pop out into a Picture-in-Picture window";
+    popoutBtn.title = "弹出到画中画窗口";
     popoutBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         if (pipWindow && !pipWindow.closed) { pipWindow.close(); return; }
         if (!window.documentPictureInPicture) {
-            alert("Picture-in-Picture isn't supported here. Try Chrome or Edge.");
+            alert("当前环境不支持画中画，请使用 Chrome 或 Edge 浏览器。");
             return;
         }
         // PiP rewrites size to fill its window; .aimdo-docked's !important rules would fight it
@@ -1010,7 +1010,7 @@ function createPanel() {
     toggleBtn.className = "aimdo-btn-icon";
     toggleBtn.style.fontSize = "16px";
     toggleBtn.textContent = "\u2212";
-    toggleBtn.title = "Collapse / expand panel";
+    toggleBtn.title = "折叠 / 展开面板";
 
     const body = document.createElement("div");
     body.id = "aimdo-viz-body";
@@ -1194,7 +1194,7 @@ function createPanel() {
     function makeEdgeHandle(side) {
         const h = document.createElement("div");
         h.className = `aimdo-edge-handle aimdo-edge-${side}`;
-        h.title = "Drag to resize";
+        h.title = "拖动以调整大小";
         h.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return;
             e.preventDefault();
@@ -1225,7 +1225,7 @@ function createPanel() {
         const h = document.createElement("div");
         // inset from the side handles so corners go to the ew-resize handles
         h.className = "aimdo-edge-handle aimdo-edge-bottom";
-        h.title = "Drag to resize";
+        h.title = "拖动以调整大小";
         h.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return;
             e.preventDefault();
@@ -1245,7 +1245,7 @@ function createPanel() {
     function makeCornerHandle() {
         const h = document.createElement("div");
         h.className = "aimdo-corner-handle";
-        h.title = "Drag to resize";
+        h.title = "拖动以调整大小";
         h.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return;
             e.preventDefault();
@@ -1404,17 +1404,17 @@ function createPanel() {
     renderScaleItems();
 
     // --- Display submenu
-    const colorBars = makeToggleItem("Color model bars",
+    const colorBars = makeToggleItem("模型条着色",
         () => colorModelBars, v => { colorModelBars = v; }, "colorModelBars");
-    const colorStroke = makeToggleItem("Color model stroke",
+    const colorStroke = makeToggleItem("模型边框着色",
         () => colorModelStroke, v => { colorModelStroke = v; }, "colorModelStroke");
-    const colorName = makeToggleItem("Color model name",
+    const colorName = makeToggleItem("模型名称着色",
         () => colorModelName, v => { colorModelName = v; }, "colorModelName");
-    const showLeg = makeToggleItem("Show legends",
+    const showLeg = makeToggleItem("显示图例",
         () => showLegends, v => { showLegends = v; }, "showLegends");
-    const showTitleItem = makeToggleItem("Show title",
+    const showTitleItem = makeToggleItem("显示标题",
         () => showTitle, v => { showTitle = v; }, "showTitle");
-    const showExecBtnItem = makeToggleItem("Execute button",
+    const showExecBtnItem = makeToggleItem("执行按钮",
         () => showExecBtn,
         v => { showExecBtn = v; execBtn.style.display = v ? "" : "none"; },
         "showExecBtn");
@@ -1426,34 +1426,34 @@ function createPanel() {
     displaySubmenu.appendChild(showExecBtnItem.item);
 
     // --- Mini view submenu
-    const showRam = makeToggleItem("RAM",
+    const showRam = makeToggleItem("内存",
         () => showRamInMini, v => { showRamInMini = v; }, "showRamInMini");
-    const showVram = makeToggleItem("VRAM",
+    const showVram = makeToggleItem("显存",
         () => showVramInMini, v => { showVramInMini = v; }, "showVramInMini");
     const showCpu = makeToggleItem("CPU",
         () => showCpuInMini, v => { showCpuInMini = v; }, "showCpuInMini");
-    const showPagefile = makeToggleItem("Pagefile",
+    const showPagefile = makeToggleItem("页面文件",
         () => showPagefileInMini, v => { showPagefileInMini = v; }, "showPagefileInMini");
-    const showDisk = makeToggleItem("I/O",
+    const showDisk = makeToggleItem("磁盘 I/O",
         () => showDiskInMini, v => { showDiskInMini = v; }, "showDiskInMini");
-    const showFaults = makeToggleItem("Thrashing (hard faults)",
+    const showFaults = makeToggleItem("颠簸（硬缺页）",
         () => showFaultsInMini, v => { showFaultsInMini = v; }, "showFaultsInMini");
     // labeled "util" since these live under the nested GPU submenu now
-    const showGpu = makeToggleItem("util",
+    const showGpu = makeToggleItem("利用率",
         () => showGpuInMini, v => { showGpuInMini = v; }, "showGpuInMini");
-    const showNames = makeToggleItem("Device names",
+    const showNames = makeToggleItem("设备名称",
         () => showHwNames, v => { showHwNames = v; }, "showHwNames");
-    const showNumbers = makeToggleItem("Numbers",
+    const showNumbers = makeToggleItem("数值",
         () => miniShowNumbers, v => { miniShowNumbers = v; }, "miniShowNumbers");
-    const showUnits = makeToggleItem("Units",
+    const showUnits = makeToggleItem("单位",
         () => miniShowUnits, v => { miniShowUnits = v; }, "miniShowUnits");
-    const showType = makeToggleItem("Type labels",
+    const showType = makeToggleItem("类型标签",
         () => miniShowType, v => { miniShowType = v; }, "miniShowType");
-    const showGpuTemp = makeToggleItem("temp",
+    const showGpuTemp = makeToggleItem("温度",
         () => miniShowGpuTemp, v => { miniShowGpuTemp = v; }, "miniShowGpuTemp");
-    const showGpuPower = makeToggleItem("power",
+    const showGpuPower = makeToggleItem("功耗",
         () => miniShowGpuPower, v => { miniShowGpuPower = v; }, "miniShowGpuPower");
-    const showSeparators = makeToggleItem("Separators",
+    const showSeparators = makeToggleItem("分隔符",
         () => miniShowSeparators, v => { miniShowSeparators = v; }, "miniShowSeparators");
     miniSubmenu.appendChild(showRam.item);
     miniSubmenu.appendChild(showVram.item);
@@ -1474,11 +1474,11 @@ function createPanel() {
     diskSubmenu.appendChild(showFaults.item);
     const drivesHeader = document.createElement("div");
     drivesHeader.className = "aimdo-menu-header";
-    drivesHeader.textContent = "Drives";
+    drivesHeader.textContent = "磁盘";
     diskSubmenu.appendChild(drivesHeader);
     const drivesPlaceholder = document.createElement("div");
     drivesPlaceholder.className = "aimdo-menu-item is-disabled";
-    drivesPlaceholder.innerHTML = `<span class="aimdo-check"></span>(detecting…)`;
+    drivesPlaceholder.innerHTML = `<span class="aimdo-check"></span>（检测中…）`;
     diskSubmenu.appendChild(drivesPlaceholder);
     const driveItems = new Map();  // mountpoint → menu item element
     function renderDriveItems() {
@@ -1517,7 +1517,7 @@ function createPanel() {
         renderDriveItems();
     }
     _rebuildDriveMenu = rebuildDriveMenu;
-    const diskParent = makeSubmenuParent("Disk", diskSubmenu, miniSubmenu, [miniSubmenu]);
+    const diskParent = makeSubmenuParent("磁盘", diskSubmenu, miniSubmenu, [miniSubmenu]);
     // first hover triggers a fresh enumeration on the next poll
     diskParent.addEventListener("mouseenter", () => { wantDisksList = true; });
     miniSubmenu.appendChild(diskParent);
@@ -1543,7 +1543,7 @@ function createPanel() {
     function renderPollItems() {
         for (const [ms, item] of pollItems) {
             const on = ms === pollInterval;
-            const label = ms < 1000 ? `${ms} ms` : `${ms / 1000} s`;
+            const label = ms < 1000 ? `${ms} 毫秒` : `${ms / 1000} 秒`;
             item.innerHTML = `<span class="aimdo-check">${on ? "✓" : ""}</span>${label}`;
         }
     }
@@ -1607,7 +1607,7 @@ function createPanel() {
     dockWidthSliderRow.addEventListener("click", (e) => e.stopPropagation());
     const dockWidthLabel = document.createElement("div");
     dockWidthLabel.style.cssText = `display:flex;justify-content:space-between;font-size:10px;color:var(--aimdo-textDim);`;
-    dockWidthLabel.innerHTML = `<span>Section width</span><span class="aimdo-dw-val">${dockSectionWidth}px</span>`;
+    dockWidthLabel.innerHTML = `<span>区块宽度</span><span class="aimdo-dw-val">${dockSectionWidth}px</span>`;
     const dockWidthSlider = document.createElement("input");
     dockWidthSlider.type = "range";
     dockWidthSlider.min = "60";
@@ -1633,13 +1633,13 @@ function createPanel() {
     buildGraphSubmenu(graphSubmenu, () => redrawGraph());
 
     // --- Root menu items
-    rootMenu.appendChild(makeSubmenuParent("Scale", scaleSubmenu));
-    rootMenu.appendChild(makeSubmenuParent("Polling interval", pollSubmenu));
-    rootMenu.appendChild(makeSubmenuParent("Display", displaySubmenu));
-    rootMenu.appendChild(makeSubmenuParent("Mini view", miniSubmenu));
-    rootMenu.appendChild(makeSubmenuParent("Graph", graphSubmenu));
-    rootMenu.appendChild(makeSubmenuParent("Theme", themeSubmenu));
-    rootMenu.appendChild(makeSubmenuParent("Dock width", dockWidthSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("缩放", scaleSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("轮询间隔", pollSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("显示", displaySubmenu));
+    rootMenu.appendChild(makeSubmenuParent("迷你视图", miniSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("图表", graphSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("主题", themeSubmenu));
+    rootMenu.appendChild(makeSubmenuParent("停靠宽度", dockWidthSubmenu));
 
     // dock / undock toggle — present only when the actionbar is available so we don't
     // offer a no-op when ComfyUI's new menu is disabled.
@@ -1648,7 +1648,7 @@ function createPanel() {
     function renderDockItem() {
         const canDock = !!getActionbarContainer();
         dockItem.style.display = (isDocked || canDock) ? "" : "none";
-        dockItem.innerHTML = `<span class="aimdo-check">${isDocked ? "✓" : ""}</span>${isDocked ? "Undock to floating" : "Dock to top"}`;
+        dockItem.innerHTML = `<span class="aimdo-check">${isDocked ? "✓" : ""}</span>${isDocked ? "取消停靠（浮动）" : "停靠到顶部"}`;
     }
     dockItem.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1663,8 +1663,8 @@ function createPanel() {
     // reset peak VRAM marker + clear history graph; this used to live on the header
     const resetItem = document.createElement("div");
     resetItem.className = "aimdo-menu-item";
-    resetItem.innerHTML = `<span class="aimdo-check"></span>Reset history`;
-    resetItem.title = "Reset peak VRAM marker and clear history graph";
+    resetItem.innerHTML = `<span class="aimdo-check"></span>重置历史`;
+    resetItem.title = "重置峰值显存标记并清空历史图表";
     resetItem.addEventListener("click", (e) => {
         e.stopPropagation();
         resetHistory();
@@ -1672,6 +1672,23 @@ function createPanel() {
         closeAllSubmenus();
     });
     rootMenu.appendChild(resetItem);
+
+    // reset EVERYTHING to defaults: clear the persisted settings key, then
+    // reload so the panel re-initializes from its built-in defaults. In-place
+    // reset would risk orphaned listeners / stale state, so a clean reload is
+    // the reliable path. Guarded by a confirm since it's destructive.
+    const resetAllItem = document.createElement("div");
+    resetAllItem.className = "aimdo-menu-item aimdo-menu-danger";
+    resetAllItem.innerHTML = `<span class="aimdo-check"></span>重置所有设置`;
+    resetAllItem.title = "将所有设置恢复为默认值（清空本地保存的设置并刷新面板）";
+    resetAllItem.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ok = confirm("确定要将所有设置恢复为默认值吗？\n此操作会清空本地保存的设置并刷新页面。");
+        if (!ok) return;
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+        window.location.reload();
+    });
+    rootMenu.appendChild(resetAllItem);
 
     function renderColorBarsItem() {
         renderScaleItems(); renderPollItems(); renderThemeItems(); renderDockWidthItems();
@@ -1816,7 +1833,7 @@ function ensureStructure(body) {
     contentDiv.innerHTML = `
         <div style="margin-bottom:4px;">
             <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
-                <span>RAM</span>
+                <span>内存</span>
                 <span class="content-ram-usage"></span>
             </div>
             <div style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
@@ -1834,7 +1851,7 @@ function ensureStructure(body) {
         </div>
         <div style="margin-bottom:4px;">
             <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
-                <span class="content-vram-label">VRAM</span>
+                <span class="content-vram-label">显存</span>
                 <span class="content-vram-usage"></span>
             </div>
             <div style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
@@ -1852,15 +1869,15 @@ function ensureStructure(body) {
             <div style="display:flex;gap:10px;font-size:10px;color:var(--aimdo-textDim);margin-top:2px;">
                 <span class="content-info-peak"></span>
                 <span class="content-info-cache"></span>
-                <span class="aimdo-gpu-util content-info-gpu" title="Click to toggle GPU line on graph" style="cursor:pointer;"></span>
+                <span class="aimdo-gpu-util content-info-gpu" title="点击切换图表中的 GPU 曲线" style="cursor:pointer;"></span>
                 <span class="content-info-temp"></span>
-                <span class="content-info-power" title="GPU power draw / cap"></span>
+                <span class="content-info-power" title="GPU 功耗 / 上限"></span>
                 <span class="content-info-state"></span>
             </div>
         </div>
         <div class="content-pagefile-section" style="margin-bottom:4px;">
             <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:2px;">
-                <span>Pagefile</span>
+                <span>页面文件</span>
                 <span class="content-pagefile-usage"></span>
             </div>
             <div class="content-pagefile-bar" style="background:var(--aimdo-barBg);border-radius:3px;height:8px;overflow:hidden;display:flex;">
@@ -2000,7 +2017,7 @@ function ensureStructure(body) {
     // drag handle below the graph — adjusts canvas height; modelsDiv takes the rest.
     const graphResize = document.createElement("div");
     graphResize.className = "aimdo-graph-resize";
-    graphResize.title = "Drag to resize graph";
+    graphResize.title = "拖动以调整图表大小";
     let graphDrag = null;
     graphResize.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
@@ -2070,7 +2087,7 @@ function updateGraphTimes() {
     const startIdx = len - visible - history.viewOffset;
     const endIdx = len - 1 - history.viewOffset;
     leftEl.textContent = formatClock(historyGet(history.times, startIdx));
-    rightEl.textContent = history.followLive ? "live" : formatClock(historyGet(history.times, endIdx));
+    rightEl.textContent = history.followLive ? "实时" : formatClock(historyGet(history.times, endIdx));
     if (graphHover.idx != null) {
         const used = history.total_vram - historyGet(history.free_vram, graphHover.idx);
         const parts = [
@@ -2102,7 +2119,7 @@ function renderModelRow(r, m, data) {
         head.className = "aimdo-model-head";
         const nameWrap = document.createElement("span");
         nameWrap.className = "aimdo-model-name";
-        nameWrap.title = "Click to collapse/expand";
+        nameWrap.title = "点击折叠/展开";
         const chevron = document.createElement("span");
         chevron.className = "aimdo-model-chevron";
         const nameSpan = document.createElement("span");
@@ -2116,7 +2133,7 @@ function renderModelRow(r, m, data) {
         unloadBtn.className = "aimdo-unload-btn";
         unloadBtn.dataset.index = m.index;
         unloadBtn.textContent = "x";
-        unloadBtn.title = "Unload this model";
+        unloadBtn.title = "卸载此模型";
         right.appendChild(unloadBtn);
         head.appendChild(nameWrap);
         head.appendChild(right);
@@ -2162,7 +2179,7 @@ function renderModelRow(r, m, data) {
         r.modelRows[m.index] = row;
     }
 
-    row.nameSpan.textContent = m.name + (m.dynamic ? "" : " (static)");
+    row.nameSpan.textContent = m.name + (m.dynamic ? "" : "（静态）");
     const typeColor = MODEL_TYPE_COLOR[m.type];
     const vramColor = (colorModelBars && typeColor) || C.vram;
     row.nameSpan.style.color = (colorModelName && typeColor) || C.text;
@@ -2175,7 +2192,7 @@ function renderModelRow(r, m, data) {
         wm.className = "aimdo-reset-wm-btn";
         wm.dataset.index = m.index;
         wm.textContent = "wm";
-        wm.title = "reset watermark";
+        wm.title = "重置水印";
         row.right.insertBefore(wm, row.unloadBtn);
         row.wmBtn = wm;
     } else if (!wantsWm && row.wmBtn) {
@@ -2205,33 +2222,33 @@ function renderModelRow(r, m, data) {
     if (m.dynamic) {
         vramShown = m.vbar_loaded;
         lastSize = Math.max(0, m.total_size - m.vbar_loaded - pinnedRam - loadedRam);
-        lastLabel = "unloaded";
+        lastLabel = "未加载";
         lastColor = "var(--aimdo-unloaded)";
         lastAlwaysShow = true;
     } else {
         vramShown = m.loaded_size;
         const inRam = Math.max(0, m.total_size - m.loaded_size);
         lastSize = Math.max(0, inRam - pinnedRam - loadedRam);
-        lastLabel = "RAM";
+        lastLabel = "内存";
         lastColor = "var(--aimdo-pinned)";
         lastAlwaysShow = false;
     }
     row.barSegs[0].style.width = (vramShown / total * 100) + "%";
-    row.barSegs[0].title = "VRAM: " + formatBytes(vramShown);
+    row.barSegs[0].title = "显存：" + formatBytes(vramShown);
     row.barSegs[1].style.width = (pinnedRam / total * 100) + "%";
-    row.barSegs[1].title = "pinned RAM: " + formatBytes(pinnedRam);
+    row.barSegs[1].title = "固定内存：" + formatBytes(pinnedRam);
     row.barSegs[2].style.width = (loadedRam / total * 100) + "%";
-    row.barSegs[2].title = "loaded RAM: " + formatBytes(loadedRam);
+    row.barSegs[2].title = "已加载内存：" + formatBytes(loadedRam);
     row.barSegs[3].style.width = (lastSize / total * 100) + "%";
-    row.barSegs[3].title = (m.dynamic ? "unloaded: " : "RAM: ") + formatBytes(lastSize);
+    row.barSegs[3].title = (m.dynamic ? "未加载：" : "内存：") + formatBytes(lastSize);
 
     const le = row.legendEntries;
     le.vram.sw.style.color = vramColor;
-    le.vram.txt.nodeValue = ` VRAM ${formatBytes(vramShown)}`;
+    le.vram.txt.nodeValue = ` 显存 ${formatBytes(vramShown)}`;
     le.pinned.wrap.style.display = pinnedRam > 0 ? "" : "none";
-    if (pinnedRam > 0) le.pinned.txt.nodeValue = ` pinned ${formatBytes(pinnedRam)}`;
+    if (pinnedRam > 0) le.pinned.txt.nodeValue = ` 固定 ${formatBytes(pinnedRam)}`;
     le.loaded.wrap.style.display = loadedRam > 0 ? "" : "none";
-    if (loadedRam > 0) le.loaded.txt.nodeValue = ` loaded ${formatBytes(loadedRam)}`;
+    if (loadedRam > 0) le.loaded.txt.nodeValue = ` 已加载 ${formatBytes(loadedRam)}`;
     const showLast = lastAlwaysShow || lastSize > 0;
     le.last.wrap.style.display = showLast ? "" : "none";
     if (showLast) {
@@ -2282,7 +2299,7 @@ function renderModelRow(r, m, data) {
 
 function renderData(body, data) {
     if (!data.enabled) {
-        body.innerHTML = `<div style="color:var(--aimdo-textDim);">not available</div>`;
+        body.innerHTML = `<div style="color:var(--aimdo-textDim);">不可用</div>`;
         refs = null;
         return;
     }
@@ -2291,8 +2308,8 @@ function renderData(body, data) {
     const pw = body._panel.getBoundingClientRect().width;
     body._titleSpan.style.display = showTitle ? "" : "none";
     body._titleSpan.textContent =
-        pw >= 320 && data.aimdo_active ? "Memory (aimdo)" :
-        pw >= 240 ? "Memory" : "";
+        pw >= 320 && data.aimdo_active ? "内存（aimdo）" :
+        pw >= 240 ? "内存" : "";
     data.gpu_util = smoothGpuUtil(data.gpu_util);
     // throttle history snapshots so a fast poll rate (e.g. 100 ms) doesn't fill
     // the buffer in 2 minutes; UI keeps updating at the full poll cadence.
@@ -2533,7 +2550,7 @@ function renderData(body, data) {
                     : "";
             } else {
                 m.gpuFill.style.width = "0%";
-                m.gpuUsage.textContent = "N/A";
+                m.gpuUsage.textContent = "暂无";
             }
         }
 
@@ -2551,7 +2568,7 @@ function renderData(body, data) {
                     : "";
             } else {
                 m.tempFill.style.width = "0%";
-                m.tempUsage.textContent = "N/A";
+                m.tempUsage.textContent = "暂无";
             }
         }
 
@@ -2573,7 +2590,7 @@ function renderData(body, data) {
                     : "";
             } else {
                 m.powerFill.style.width = "0%";
-                m.powerUsage.textContent = "N/A";
+                m.powerUsage.textContent = "暂无";
             }
         }
 
@@ -2610,45 +2627,45 @@ function renderData(body, data) {
     const cr = r.contentDiv._refs;
     cr.ramUsage.textContent = `${formatBytes(ramUsed)}|${formatBytes(ramTotal)}`;
     cr.ramSegs[0].style.width = pinnedRamPct + "%";
-    cr.ramSegs[0].title = "pinned: " + formatBytes(pinnedRamTotal);
+    cr.ramSegs[0].title = "固定：" + formatBytes(pinnedRamTotal);
     cr.ramSegs[1].style.width = loadedRamPct + "%";
-    cr.ramSegs[1].title = "loaded: " + formatBytes(loadedRamTotal);
+    cr.ramSegs[1].title = "已加载：" + formatBytes(loadedRamTotal);
     cr.ramSegs[2].style.width = pythonOtherPct + "%";
-    cr.ramSegs[2].title = "python: " + formatBytes(pythonOther);
+    cr.ramSegs[2].title = "Python：" + formatBytes(pythonOther);
     cr.ramSegs[3].style.width = ramOtherPct + "%";
-    cr.ramSegs[3].title = "other: " + formatBytes(ramOther);
+    cr.ramSegs[3].title = "其他：" + formatBytes(ramOther);
     cr.ramLegend.style.display = showLegends ? "flex" : "none";
     if (showLegends) {
-        cr.ramTexts.pinned.textContent = `pinned ${formatBytes(pinnedRamTotal)}`;
-        cr.ramTexts.loaded.textContent = `loaded ${formatBytes(loadedRamTotal)}`;
-        cr.ramTexts.python.textContent = `python ${formatBytes(pythonOther)}`;
-        cr.ramTexts.other.textContent = `other ${formatBytes(ramOther)}`;
+        cr.ramTexts.pinned.textContent = `固定 ${formatBytes(pinnedRamTotal)}`;
+        cr.ramTexts.loaded.textContent = `已加载 ${formatBytes(loadedRamTotal)}`;
+        cr.ramTexts.python.textContent = `Python ${formatBytes(pythonOther)}`;
+        cr.ramTexts.other.textContent = `其他 ${formatBytes(ramOther)}`;
     }
 
-    cr.vramLabel.textContent = "VRAM" + ((showHwNames && data.gpu_name) ? ` (${shortenGpuName(data.gpu_name)})` : "");
+    cr.vramLabel.textContent = "显存" + ((showHwNames && data.gpu_name) ? ` (${shortenGpuName(data.gpu_name)})` : "");
     cr.vramLabel.title = data.gpu_name || "";
     cr.vramUsage.textContent = `${formatBytes(used)}|${formatBytes(data.total_vram)}`;
     cr.vramSegs[0].style.width = aimdoPct + "%";
-    cr.vramSegs[0].title = "models: " + formatBytes(aimdo);
+    cr.vramSegs[0].title = "模型：" + formatBytes(aimdo);
     cr.vramSegs[1].style.width = torchPct + "%";
     cr.vramSegs[1].title = "torch: " + formatBytes(torchActive);
     cr.vramSegs[2].style.width = torchCachePct + "%";
-    cr.vramSegs[2].title = "cache: " + formatBytes(torchCache);
+    cr.vramSegs[2].title = "缓存：" + formatBytes(torchCache);
     cr.vramSegs[3].style.width = otherPct + "%";
-    cr.vramSegs[3].title = "other: " + formatBytes(otherUsed);
+    cr.vramSegs[3].title = "其他：" + formatBytes(otherUsed);
     cr.vramLegend.style.display = showLegends ? "flex" : "none";
     if (showLegends) {
         cr.vramWraps.models.style.display = aimdo > 0 ? "" : "none";
-        if (aimdo > 0) cr.vramTexts.models.textContent = `models ${formatBytes(aimdo)}`;
+        if (aimdo > 0) cr.vramTexts.models.textContent = `模型 ${formatBytes(aimdo)}`;
         cr.vramWraps.torch.style.display = torchActive > 0 ? "" : "none";
         if (torchActive > 0) cr.vramTexts.torch.textContent = `torch ${formatBytes(torchActive)}`;
         cr.vramWraps.cache.style.display = torchCache > 0 ? "" : "none";
-        if (torchCache > 0) cr.vramTexts.cache.textContent = `cache ${formatBytes(torchCache)}`;
-        cr.vramTexts.other.textContent = `other ${formatBytes(otherUsed)}`;
+        if (torchCache > 0) cr.vramTexts.cache.textContent = `缓存 ${formatBytes(torchCache)}`;
+        cr.vramTexts.other.textContent = `其他 ${formatBytes(otherUsed)}`;
     }
 
-    cr.infoPeak.textContent = "peak: " + formatBytes(peakVramUsed);
-    cr.infoCache.textContent = "cache: " + formatBytes(data.torch_reserved - data.torch_active);
+    cr.infoPeak.textContent = "峰值：" + formatBytes(peakVramUsed);
+    cr.infoCache.textContent = "缓存：" + formatBytes(data.torch_reserved - data.torch_active);
     if (data.gpu_util != null) {
         cr.infoGpu.style.display = "";
         cr.infoGpu.style.color = gpuUtilColor(data.gpu_util);
@@ -2673,10 +2690,10 @@ function renderData(body, data) {
     }
     if (execState.running) {
         cr.infoState.style.color = "var(--aimdo-running)";
-        cr.infoState.textContent = `● ${execState.node || "running"}${execState.progress ? " " + execState.progress : ""}`;
+        cr.infoState.textContent = `● ${execState.node || "运行中"}${execState.progress ? " " + execState.progress : ""}`;
     } else {
         cr.infoState.style.color = "";
-        cr.infoState.textContent = "● idle";
+        cr.infoState.textContent = "● 空闲";
     }
     if (data.total_swap > 0) {
         cr.pagefileSection.style.display = "";
@@ -2706,7 +2723,7 @@ function renderData(body, data) {
     // models section — incremental DOM updates: keep rows across polls, only mutate text/widths
     if (data.models.length === 0 && !r.noModelsMsg) {
         r.noModelsMsg = document.createElement("div");
-        r.noModelsMsg.textContent = "No models loaded";
+        r.noModelsMsg.textContent = "未加载任何模型";
         r.noModelsMsg.style.cssText = `color:var(--aimdo-textDim);margin-top:6px;`;
         r.modelsDiv.insertBefore(r.noModelsMsg, r.modelsDiv.firstChild);
     } else if (data.models.length > 0 && r.noModelsMsg) {
@@ -2735,12 +2752,12 @@ function renderData(body, data) {
         r.bottomLegend = document.createElement("div");
         r.bottomLegend.style.cssText = `display:flex;flex-wrap:wrap;gap:8px;font-size:10px;color:var(--aimdo-textDim);margin-top:4px;border-bottom:1px solid var(--aimdo-border);padding-bottom:4px;`;
         r.bottomLegend.innerHTML =
-            `<span><span style="color:var(--aimdo-vram);">&#9632;</span> VRAM</span>` +
-            `<span><span style="color:var(--aimdo-pinned);">&#9632;</span> pinned</span>` +
-            `<span><span style="color:var(--aimdo-loadedRam);">&#9632;</span> loaded</span>` +
-            `<span><span style="color:var(--aimdo-unloaded);">&#9632;</span> unloaded</span>` +
+            `<span><span style="color:var(--aimdo-vram);">&#9632;</span> 显存</span>` +
+            `<span><span style="color:var(--aimdo-pinned);">&#9632;</span> 固定</span>` +
+            `<span><span style="color:var(--aimdo-loadedRam);">&#9632;</span> 已加载</span>` +
+            `<span><span style="color:var(--aimdo-unloaded);">&#9632;</span> 未加载</span>` +
             `<span><span style="color:var(--aimdo-torch);">&#9632;</span> torch</span>` +
-            `<span><span style="color:var(--aimdo-totalLine);">&#9472;</span> total</span>` +
+            `<span><span style="color:var(--aimdo-totalLine);">&#9472;</span> 总量</span>` +
             `<span><span style="color:var(--aimdo-gpuUtil);">&#9472;</span> GPU %</span>`;
         r.modelsDiv.insertBefore(r.bottomLegend, r.modelsDiv.firstChild);
     }
@@ -2775,8 +2792,8 @@ function renderData(body, data) {
             const vramColor = (colorModelBars && MODEL_TYPE_COLOR[m.type]) || C.vram;
             // swatch carries the category color; text inherits readable textDim.
             ref.vramSw.style.color = vramColor;
-            ref.vramTxt.nodeValue = ` ${vramPages} VRAM (${formatBytes(vramPages * PAGE)})`;
-            ref.unloadedTxt.nodeValue = ` ${ramPages} unloaded (${formatBytes(ramPages * PAGE)})`;
+            ref.vramTxt.nodeValue = ` ${vramPages} 显存 (${formatBytes(vramPages * PAGE)})`;
+            ref.unloadedTxt.nodeValue = ` ${ramPages} 未加载 (${formatBytes(ramPages * PAGE)})`;
 
             let canvas = r.pageCanvases[vkey];
             if (!canvas) {
@@ -2890,7 +2907,7 @@ app.registerExtension({
                 const data = await resp.json();
                 renderData(body, data);
             } catch (e) {
-                body.innerHTML = `<div style="color:#aa5555;">Error fetching data</div>`;
+                body.innerHTML = `<div style="color:#aa5555;">获取数据失败</div>`;
                 refs = null;
             }
             pollTimer = setTimeout(poll, pollInterval);

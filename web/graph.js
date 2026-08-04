@@ -512,10 +512,10 @@ export function drawGraph(ctx, w, h) {
 // submenu container + a redraw callback that's tied to the active panel instance.
 export function buildGraphSubmenu(submenu, redrawGraph) {
     const graphStyles = [
-        { key: "area",   label: "Area (stacked)" },
-        { key: "bars",   label: "Bars" },
-        { key: "ticker", label: "Ticker" },
-        { key: "dots",   label: "Dots (fade)" },
+        { key: "area",   label: "面积图（堆叠）" },
+        { key: "bars",   label: "柱状图" },
+        { key: "ticker", label: "走势图" },
+        { key: "dots",   label: "点阵图（渐隐）" },
     ];
     const items = new Map();
     function renderItems() {
@@ -554,7 +554,7 @@ export function buildGraphSubmenu(submenu, redrawGraph) {
         redrawGraph();
     });
     const resetColor = document.createElement("span");
-    resetColor.textContent = "reset";
+    resetColor.textContent = "重置";
     resetColor.style.cssText = `margin-left:auto;color:var(--aimdo-textDim);cursor:pointer;font-size:10px;`;
     resetColor.addEventListener("click", () => {
         graphState.graphVramColor = null;
@@ -563,7 +563,7 @@ export function buildGraphSubmenu(submenu, redrawGraph) {
         redrawGraph();
     });
     colorRow.appendChild(colorInput);
-    colorRow.appendChild(document.createTextNode("VRAM color"));
+    colorRow.appendChild(document.createTextNode("显存颜色"));
     colorRow.appendChild(resetColor);
     submenu.appendChild(colorRow);
 
@@ -581,7 +581,7 @@ export function buildGraphSubmenu(submenu, redrawGraph) {
         redrawGraph();
     });
     const resetTotalColor = document.createElement("span");
-    resetTotalColor.textContent = "reset";
+    resetTotalColor.textContent = "重置";
     resetTotalColor.style.cssText = resetColor.style.cssText;
     resetTotalColor.addEventListener("click", () => {
         graphState.graphTotalColor = null;
@@ -590,7 +590,7 @@ export function buildGraphSubmenu(submenu, redrawGraph) {
         redrawGraph();
     });
     totalColorRow.appendChild(totalColorInput);
-    totalColorRow.appendChild(document.createTextNode("Total color"));
+    totalColorRow.appendChild(document.createTextNode("总量颜色"));
     totalColorRow.appendChild(resetTotalColor);
     submenu.appendChild(totalColorRow);
 
@@ -600,7 +600,7 @@ export function buildGraphSubmenu(submenu, redrawGraph) {
     smoothRow.addEventListener("click", (e) => e.stopPropagation());
     const smoothLabel = document.createElement("div");
     smoothLabel.style.cssText = `display:flex;justify-content:space-between;color:var(--aimdo-textDim);`;
-    smoothLabel.innerHTML = `<span>Total smoothness</span><span class="aimdo-sm-val">${graphState.graphTotalSmoothness}</span>`;
+    smoothLabel.innerHTML = `<span>总量平滑度</span><span class="aimdo-sm-val">${graphState.graphTotalSmoothness}</span>`;
     const smoothSlider = document.createElement("input");
     smoothSlider.type = "range";
     smoothSlider.min = "0";
